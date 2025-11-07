@@ -113,3 +113,66 @@ def ui():
     os.environ["COMFY_DIR"] = DATA_BASE
     cmd = ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"]
     subprocess.Popen(cmd, cwd=DATA_BASE, env=os.environ.copy())
+
+        # === Fix Output Directory ===
+    output_dir = os.path.join(DATA_BASE, "output")
+    temp_dir = os.path.join(DATA_BASE, "temp")
+    
+    # Pastikan directory exist dan writable
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Buat symbolic link jika perlu
+    if not os.path.exists("/tmp/comfy_output"):
+        os.symlink(output_dir, "/tmp/comfy_output")
+    
+    print(f"✅ Output dir: {output_dir} (exists: {os.path.exists(output_dir)})")
+    print(f"✅ Temp dir: {temp_dir} (exists: {os.path.exists(temp_dir)})")
+    
+    # Set environment variables untuk output
+    os.environ["COMFY_OUTPUT_PATH"] = output_dir
+    os.environ["COMFY_TEMP_PATH"] = temp_dir
+
+        # Fix permissions
+    subprocess.run(f"chmod 755 {output_dir}", shell=True)
+    subprocess.run(f"chmod 755 {temp_dir}", shell=True)
+
+        cmd = [
+        "python", "main.py", 
+        "--listen", "0.0.0.0", 
+        "--port", "8000",
+        "--force-fp16",
+        "--preview-method", "auto",
+        "--disable-xformers", 
+        "--enable-cors-header", "*",
+        "--output-directory", output_dir,  # Explicit output path
+        "--temp-directory", temp_dir,      # Explicit temp path
+        "--cuda-device", "0"               # Force GPU 0
+    ]
+
+        # Function untuk list files di output directory
+    def check_output_files():
+        print("📁 Checking output files...")
+        if os.path.exists(output_dir):
+            files = os.listdir(output_dir)
+            print(f"Files in output dir: {files}")
+            for f in files:
+                filepath = os.path.join(output_dir, f)
+                size = os.path.getsize(filepath) if os.path.isfile(filepath) else 0
+                print(f"  - {f} ({size} bytes)")
+        else:
+            print("❌ Output directory not found!")
+    
+    # Jalankan check setelah startup
+    import threading
+    import time
+    
+    def periodic_check():
+        time.sleep(15)  # Tunggu 15 detik setelah startup
+        check_output_files()
+    
+    checker_thread = threading.Thread(target=periodic_check)
+    checker_thread.daemon = True
+    checker_thread.start()
+
+     
