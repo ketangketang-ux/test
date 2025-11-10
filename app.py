@@ -6,7 +6,7 @@ import time
 from typing import Optional
 from huggingface_hub import hf_hub_download
 import modal
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 import requests
 
@@ -41,8 +41,7 @@ image = (
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .run_commands([
         "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli fastapi uvicorn",
-        "pip install huggingface_hub[hf_transfer]==0.28.1 requests",
+        "pip install --no-cache-dir comfy-cli fastapi uvicorn requests huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia"
     ])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
@@ -92,10 +91,9 @@ def ui():
         subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=True)
     os.chdir(DATA_BASE)
 
-    # === Update Backend & Manager ===
+    # === Update Comfy & Manager ===
     subprocess.run("git config pull.ff only", shell=True)
     subprocess.run("git pull --ff-only", shell=True)
-
     manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
     if os.path.exists(manager_dir):
         os.chdir(manager_dir)
@@ -111,16 +109,15 @@ def ui():
     for cmd in extra_cmds:
         subprocess.run(cmd, shell=True)
 
-    # === Prepare dirs ===
+    # === Prepare Dirs ===
     output_dir = os.path.join(DATA_BASE, "output")
     temp_dir = os.path.join(DATA_BASE, "temp")
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
-
     os.environ["COMFY_OUTPUT_PATH"] = output_dir
     os.environ["COMFY_TEMP_PATH"] = temp_dir
 
-    # === Jalankan Comfy di background (port internal 8188) ===
+    # === Jalankan Comfy di Background (port internal 8188) ===
     def run_comfy():
         cmd = [
             "python", "main.py",
@@ -134,33 +131,30 @@ def ui():
         ]
         subprocess.Popen(cmd, cwd=DATA_BASE, env=os.environ.copy())
 
-    threading.Thread(target=run_comfy, daemon=True).start()
+    t = threading.Thread(target=run_comfy, daemon=True)
+    t.start()
+    time.sleep(2)
 
-    # === FastAPI Wrapper (jadi GUI utama di port 8000) ===
+    # === FastAPI GUI ===
     app_gui = FastAPI(title="Comfy Remote GUI")
     COMFY_API = "http://127.0.0.1:8188"
 
     @app_gui.get("/", response_class=HTMLResponse)
     def home():
         return """
-        <html><body style='font-family: sans-serif; background: #101010; color: #eee; text-align:center;'>
+        <html><body style='font-family:sans-serif;background:#111;color:#eee;text-align:center;'>
         <h2>🧠 ComfyUI Remote GUI</h2>
         <form action="/generate" method="post">
-          <input name="prompt" style="width:60%; padding:5px" placeholder="prompt"><br><br>
-          <label>Steps: </label><input type="number" name="steps" value="25"><br><br>
-          <label>CFG: </label><input type="number" name="cfg" value="6.5" step="0.1"><br><br>
+          <input name="prompt" style="width:60%;padding:6px" placeholder="prompt"><br><br>
+          <label>Steps:</label> <input type="number" name="steps" value="25"><br><br>
+          <label>CFG:</label> <input type="number" name="cfg" value="6.5" step="0.1"><br><br>
           <button type="submit" style="padding:10px 20px;">Generate</button>
         </form>
         </body></html>
         """
 
     @app_gui.post("/generate")
-    async def generate(req: Request):
-        form = await req.form()
-        prompt = form.get("prompt", "")
-        steps = int(form.get("steps", 25))
-        cfg = float(form.get("cfg", 6.5))
-
+    async def generate(prompt: str = Form(...), steps: int = Form(25), cfg: float = Form(6.5)):
         comfy_payload = {
             "prompt": {
                 "1": {"inputs": {"text": prompt}, "class_type": "CLIPTextEncode"},
@@ -170,8 +164,7 @@ def ui():
         try:
             r = requests.post(f"{COMFY_API}/prompt", json=comfy_payload)
             job_id = r.json()["prompt_id"]
-
-            for _ in range(40):
+            for _ in range(45):
                 time.sleep(1)
                 res = requests.get(f"{COMFY_API}/history/{job_id}")
                 if res.ok:
@@ -180,9 +173,9 @@ def ui():
                         img_path = data[job_id]["outputs"]["images"][0]["path"]
                         img_url = f"{COMFY_API}/view?filename={img_path}"
                         return HTMLResponse(f"""
-                        <html><body style='background:#000; color:#fff; text-align:center;'>
+                        <html><body style='background:#000;color:#fff;text-align:center;'>
                         <h3>✅ Generated Image:</h3>
-                        <img src='{img_url}' style='max-width:90%; border:2px solid #666;'><br><br>
+                        <img src='{img_url}' style='max-width:90%;border:2px solid #666;'><br><br>
                         <a href='/'>🔄 Generate Again</a></body></html>
                         """)
             return HTMLResponse("<h3>❌ Timeout waiting for image</h3>")
@@ -190,4 +183,5 @@ def ui():
             return HTMLResponse(f"<h3>⚠️ Error: {e}</h3>")
 
     print("🚀 Comfy backend running on :8188 | GUI on :8000")
+    print("✅ FastAPI GUI object returned to Modal web server")
     return app_gui
