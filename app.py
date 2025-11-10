@@ -1,9 +1,15 @@
 import os
 import shutil
 import subprocess
+import threading
+import time
 from typing import Optional
 from huggingface_hub import hf_hub_download
 import modal
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import requests
+import uvicorn
 
 # === Path Settings ===
 DATA_ROOT = "/data/comfy"
@@ -36,7 +42,7 @@ image = (
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .run_commands([
         "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli uv",
+        "pip install --no-cache-dir comfy-cli uv fastapi uvicorn",
         "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia"
     ])
@@ -75,7 +81,7 @@ vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui", image=image)
 
 @app.function(
-    gpu="L4",  # Ganti ke "A100-40GB" kalau mau nanti
+    gpu="L4",
     timeout=1800,
     scaledown_window=300,
     volumes={DATA_ROOT: vol},
@@ -85,7 +91,6 @@ def ui():
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(DATA_BASE):
         subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=True)
-
     os.chdir(DATA_BASE)
 
     # === Update Backend ===
@@ -106,73 +111,84 @@ def ui():
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
             hf_download(sub, fn, repo, subf)
-
     for cmd in extra_cmds:
         subprocess.run(cmd, shell=True)
 
-    os.environ["COMFY_DIR"] = DATA_BASE
-    cmd = ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"]
-    subprocess.Popen(cmd, cwd=DATA_BASE, env=os.environ.copy())
-
-        # === Fix Output Directory ===
+    # === Prepare dirs ===
     output_dir = os.path.join(DATA_BASE, "output")
     temp_dir = os.path.join(DATA_BASE, "temp")
-    
-    # Pastikan directory exist dan writable
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
-    
-    # Buat symbolic link jika perlu
     if not os.path.exists("/tmp/comfy_output"):
         os.symlink(output_dir, "/tmp/comfy_output")
-    
-    print(f"✅ Output dir: {output_dir} (exists: {os.path.exists(output_dir)})")
-    print(f"✅ Temp dir: {temp_dir} (exists: {os.path.exists(temp_dir)})")
-    
-    # Set environment variables untuk output
     os.environ["COMFY_OUTPUT_PATH"] = output_dir
     os.environ["COMFY_TEMP_PATH"] = temp_dir
 
-        # Fix permissions
     subprocess.run(f"chmod 755 {output_dir}", shell=True)
     subprocess.run(f"chmod 755 {temp_dir}", shell=True)
 
-        cmd = [
-        "python", "main.py", 
-        "--listen", "0.0.0.0", 
+    # === Launch Comfy backend ===
+    cmd = [
+        "python", "main.py",
+        "--listen", "0.0.0.0",
         "--port", "8000",
         "--force-fp16",
         "--preview-method", "auto",
-        "--disable-xformers", 
+        "--disable-xformers",
         "--enable-cors-header", "*",
-        "--output-directory", output_dir,  # Explicit output path
-        "--temp-directory", temp_dir,      # Explicit temp path
-        "--cuda-device", "0"               # Force GPU 0
+        "--output-directory", output_dir,
+        "--temp-directory", temp_dir,
+        "--cuda-device", "0"
     ]
+    subprocess.Popen(cmd, cwd=DATA_BASE, env=os.environ.copy())
 
-        # Function untuk list files di output directory
+    # === REST API Wrapper ===
+    wrapper = FastAPI()
+    COMFY_API = "http://127.0.0.1:8000"
+
+    @wrapper.post("/generate")
+    async def generate(req: Request):
+        try:
+            body = await req.json()
+            prompt = body.get("prompt", "")
+            steps = int(body.get("steps", 25))
+            cfg = float(body.get("cfg", 7.0))
+
+            comfy_payload = {
+                "prompt": {
+                    "1": {"inputs": {"text": prompt}, "class_type": "CLIPTextEncode"},
+                    "2": {"inputs": {"samples": ["1"], "steps": steps, "cfg": cfg}, "class_type": "KSampler"}
+                }
+            }
+            r = requests.post(f"{COMFY_API}/prompt", json=comfy_payload)
+            r.raise_for_status()
+            job_id = r.json().get("prompt_id")
+
+            for _ in range(45):
+                time.sleep(1)
+                res = requests.get(f"{COMFY_API}/history/{job_id}")
+                if res.ok:
+                    data = res.json()
+                    if "images" in data[job_id]["outputs"]:
+                        img_path = data[job_id]["outputs"]["images"][0]["path"]
+                        img_url = f"{COMFY_API}/view?filename={img_path}"
+                        return JSONResponse({"image_url": img_url})
+            return JSONResponse({"error": "timeout"}, status_code=504)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    def run_wrapper():
+        uvicorn.run(wrapper, host="0.0.0.0", port=7860, log_level="info")
+
+    threading.Thread(target=run_wrapper, daemon=True).start()
+
+    # === Startup Checks ===
     def check_output_files():
-        print("📁 Checking output files...")
         if os.path.exists(output_dir):
             files = os.listdir(output_dir)
-            print(f"Files in output dir: {files}")
-            for f in files:
-                filepath = os.path.join(output_dir, f)
-                size = os.path.getsize(filepath) if os.path.isfile(filepath) else 0
-                print(f"  - {f} ({size} bytes)")
+            print(f"📂 Output files: {files}")
         else:
-            print("❌ Output directory not found!")
-    
-    # Jalankan check setelah startup
-    import threading
-    import time
-    
-    def periodic_check():
-        time.sleep(15)  # Tunggu 15 detik setelah startup
-        check_output_files()
-    
-    checker_thread = threading.Thread(target=periodic_check)
-    checker_thread.daemon = True
-    checker_thread.start()
+            print("❌ Output dir missing!")
 
-     
+    threading.Timer(15, check_output_files).start()
+    print("🚀 Comfy backend running on :8000 | REST API on :7860")
