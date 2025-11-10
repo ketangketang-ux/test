@@ -3,11 +3,10 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Optional
 from huggingface_hub import hf_hub_download
 import modal
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 import requests
 
 # === Path Settings ===
@@ -41,7 +40,7 @@ image = (
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .run_commands([
         "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli fastapi uvicorn requests huggingface_hub[hf_transfer]==0.28.1",
+        "pip install --no-cache-dir comfy-cli fastapi uvicorn requests python-multipart huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia"
     ])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
