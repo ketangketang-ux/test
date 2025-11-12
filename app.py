@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI di Modal (FIXED: NO multi-line RUN!)
+# ComfyUI + GUI di Modal (FINAL FIX - All Dependencies)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -26,7 +26,7 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan SATU PER SATU command (NGGAK ADA MULTI-LINE!)
+# Image dengan SEMUA dependencies yang dibutuhkan
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install(
@@ -36,14 +36,9 @@ image = (
     .run_commands("pip install --upgrade pip")
     .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
-    .run_commands("pip install torchsde")  # FIX untuk k_diffusion
-    .run_commands("pip install av")        # FIX untuk video/image processing
+    # SEMUA dependencies ComfyUI terbaru + custom nodes
+    .run_commands("pip install torchsde av alembic pydantic-settings piexif opencv-python gguf accelerate psutil kornia matplotlib")
     .run_commands("pip install comfyui-embedded-docs")       # FIX embedded docs
-    .run_commands("pip install alembic")                     # FIX database
-    .run_commands("pip install pydantic-settings")           # FIX pyproject.toml parsing
-    .run_commands("pip install piexif")                      # FIX prompt reader node
-    .run_commands("pip install opencv-python")               # FIX inspire pack (cv2)
-    .run_commands("pip install gguf")                        # FIX ComfyUI-GGUF custom node
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
@@ -74,13 +69,13 @@ def ui():
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
     
-    # FIX: Buat dummy templates directory untuk menghindari error ComfyUI
+    # FIX: Buat dummy templates directory (hindari error ComfyUI)
     templates_dir = "/usr/local/lib/python3.12/site-packages/comfyui_workflow_templates/templates"
     os.makedirs(templates_dir, exist_ok=True)
     
     os.chdir(COMFY_DIR)
     
-    # Download models
+    # Download models (hanya jika belum ada)
     for sub, fn, repo, subf in MODELS_LIST:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -116,19 +111,20 @@ def ui():
     
     threading.Thread(target=run_comfy, daemon=True).start()
     
-    # Wait for ComfyUI ready
+    # Wait for ComfyUI ready (NAIKKAN TIMEOUT jadi 120 detik)
     print("⏳ Waiting for ComfyUI to start...")
-    for i in range(60):
+    for i in range(120):  # NAIKKAN DARI 60 ke 120
         try:
-            r = requests.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=1)
+            r = requests.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=2)
             if r.ok:
                 print(f"✅ ComfyUI ready after {i+1}s!")
                 break
-        except:
-            pass
+        except Exception as e:
+            if i % 10 == 0:  # Print error setiap 10 detik agar tahu progress
+                print(f"⏳ Still waiting... ({i}s)")
         time.sleep(1)
     else:
-        raise RuntimeError("❌ ComfyUI failed to start")
+        raise RuntimeError("❌ ComfyUI failed to start after 120s")
 
     # Build GUI
     gui_app = FastAPI(title="ComfyUI Remote GUI")
