@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI di Modal (FIXED untuk v1.2.2)
+# ComfyUI + GUI untuk Modal v1.2.2 (FIXED)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 import requests
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 
 # Konfigurasi
@@ -26,7 +26,7 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan dependencies
+# Image
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
@@ -41,7 +41,7 @@ image = (
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Model list (FLUX)
+# Models (FLUX)
 MODELS_LIST = [
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
@@ -53,20 +53,20 @@ MODELS_LIST = [
 @app.function(
     gpu="L4",
     timeout=1800,
-    # ❌ HAPUS: concurrent_inputs=1  <- ini nggak ada di v1.2.2
+    # ❌ HAPUS: concurrent_inputs=1  <- NGGAK ADA DI v1.2.2
     volumes={DATA_ROOT: vol},
     image=image,
 )
 @modal.web_server(GUI_PORT, startup_timeout=300)
 def ui():
-    # Setup directories
+    # Setup dirs
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
     
     os.chdir(COMFY_DIR)
     
-    # Download models (hanya kalau belum ada)
+    # Download models (skip kalau sudah ada)
     for sub, fn, repo, subf in MODELS_LIST:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -80,13 +80,13 @@ def ui():
     
     vol.commit()
     
-    # Environment variables
+    # Environment
     os.environ.update({
         "COMFY_OUTPUT_PATH": OUTPUT_DIR,
         "COMFY_TEMP_PATH": TEMP_DIR,
     })
     
-    # Start ComfyUI di background
+    # Start ComfyUI
     def run_comfy():
         cmd = [
             "python", "main.py",
@@ -100,8 +100,7 @@ def ui():
         ]
         subprocess.Popen(cmd, cwd=COMFY_DIR)
     
-    comfy_thread = threading.Thread(target=run_comfy, daemon=True)
-    comfy_thread.start()
+    threading.Thread(target=run_comfy, daemon=True).start()
     
     # CRITICAL: Tunggu ComfyUI benar-benar ready (health check)
     print("⏳ Waiting for ComfyUI to start...")
@@ -111,13 +110,13 @@ def ui():
             if r.ok:
                 print(f"✅ ComfyUI ready after {i+1}s!")
                 break
-        except requests.exceptions.ConnectionError:
+        except:
             pass
         time.sleep(1)
     else:
         raise RuntimeError("❌ ComfyUI failed to start after 60s")
 
-    # Build FastAPI GUI
+    # Build GUI
     gui_app = FastAPI(title="ComfyUI Remote GUI")
     COMFY_API = f"http://127.0.0.1:{COMFY_PORT}"
 
@@ -200,11 +199,8 @@ def ui():
     def health():
         return {"status": "healthy", "comfy_port": COMFY_PORT, "gui_port": GUI_PORT}
 
-    # Give Modal time to register the web server
+    # Give Modal time to register
     time.sleep(2)
     
     print(f"🚀 GUI ready! Serving on port {GUI_PORT}")
-    print(f"   ComfyUI backend: http://localhost:{COMFY_PORT}")
-    print(f"   Remote GUI: http://localhost:{GUI_PORT}")
-    
     return gui_app
