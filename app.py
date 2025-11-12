@@ -41,6 +41,9 @@ image = (
     .run_commands("pip install comfyui-workflow-templates")  # FIX frontend templates
     .run_commands("pip install comfyui-embedded-docs")       # FIX embedded docs
     .run_commands("pip install alembic")                     # FIX database
+    .run_commands("pip install pydantic-settings")           # FIX pyproject.toml parsing
+    .run_commands("pip install piexif")                      # FIX prompt reader node
+    .run_commands("pip install opencv-python")               # FIX inspire pack (cv2)
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
