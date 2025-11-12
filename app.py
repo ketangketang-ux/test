@@ -26,7 +26,7 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan SEMUA dependencies yang dibutuhkan
+# Image dengan dependencies lengkap (SEMUA SEKALIGUS)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install(
@@ -36,9 +36,9 @@ image = (
     .run_commands("pip install --upgrade pip")
     .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
-    # SEMUA dependencies ComfyUI terbaru + custom nodes
+    # SEMUA dependencies ComfyUI terbaru + custom nodes dalam SATU BARIS
     .run_commands("pip install torchsde av alembic pydantic-settings piexif opencv-python gguf accelerate psutil kornia matplotlib")
-    .run_commands("pip install comfyui-embedded-docs")       # FIX embedded docs
+    .run_commands("pip install comfyui-embedded-docs")
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
@@ -64,14 +64,13 @@ MODELS_LIST = [
 )
 @modal.web_server(GUI_PORT, startup_timeout=300)
 def ui():
-    # Setup dirs
+    # Setup folders
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
     
-    # FIX: Buat dummy templates directory (hindari error ComfyUI)
-    templates_dir = "/usr/local/lib/python3.12/site-packages/comfyui_workflow_templates/templates"
-    os.makedirs(templates_dir, exist_ok=True)
+    # FIX: Buat dummy templates directory
+    os.makedirs("/usr/local/lib/python3.12/site-packages/comfyui_workflow_templates/templates", exist_ok=True)
     
     os.chdir(COMFY_DIR)
     
@@ -95,36 +94,47 @@ def ui():
         "COMFY_TEMP_PATH": TEMP_DIR,
     })
     
-    # Start ComfyUI
+    # Start ComfyUI dengan logging ke file
+    log_file = f"{DATA_ROOT}/comfyui.log"
+    cmd = [
+        "python", "main.py",
+        "--listen", "0.0.0.0",
+        "--port", str(COMFY_PORT),
+        "--force-fp16",
+        "--disable-xformers",
+        "--enable-cors-header", "*",
+        "--output-directory", OUTPUT_DIR,
+        "--temp-directory", TEMP_DIR,
+    ]
+    
     def run_comfy():
-        cmd = [
-            "python", "main.py",
-            "--listen", "0.0.0.0",
-            "--port", str(COMFY_PORT),
-            "--force-fp16",
-            "--disable-xformers",
-            "--enable-cors-header", "*",
-            "--output-directory", OUTPUT_DIR,
-            "--temp-directory", TEMP_DIR,
-        ]
-        subprocess.Popen(cmd, cwd=COMFY_DIR)
+        with open(log_file, "a") as f:
+            subprocess.Popen(cmd, cwd=COMFY_DIR, stdout=f, stderr=subprocess.STDOUT)
     
     threading.Thread(target=run_comfy, daemon=True).start()
     
-    # Wait for ComfyUI ready (NAIKKAN TIMEOUT jadi 120 detik)
-    print("⏳ Waiting for ComfyUI to start...")
-    for i in range(120):  # NAIKKAN DARI 60 ke 120
+    # Tunggu lebih lama (120 detik) dengan feedback
+    print("⏳ Waiting for ComfyUI to start (max 120s)...")
+    for i in range(120):
         try:
+            time.sleep(1)
+            if i % 10 == 0:
+                print(f"⏳ Still waiting... {i}s elapsed")
+            
             r = requests.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=2)
             if r.ok:
                 print(f"✅ ComfyUI ready after {i+1}s!")
                 break
-        except Exception as e:
-            if i % 10 == 0:  # Print error setiap 10 detik agar tahu progress
-                print(f"⏳ Still waiting... ({i}s)")
-        time.sleep(1)
+        except:
+            pass
     else:
-        raise RuntimeError("❌ ComfyUI failed to start after 120s")
+        # Baca log terakhir untuk debugging
+        try:
+            with open(log_file, "r") as f:
+                print(f"📋 ComfyUI Log Terakhir:\n{f.read()[-500:]}")
+        except:
+            pass
+        raise RuntimeError("❌ ComfyUI failed to start. Cek log di /health endpoint")
 
     # Build GUI
     gui_app = FastAPI(title="ComfyUI Remote GUI")
@@ -202,15 +212,37 @@ def ui():
 
     @gui_app.get("/view")
     def view_image(filename: str):
-        r = requests.get(f"{COMFY_API}/view?filename={filename}&type=output")
-        return HTMLResponse(content=r.content, media_type="image/png")
+        try:
+            r = requests.get(f"{COMFY_API}/view?filename={filename}&type=output")
+            return HTMLResponse(content=r.content, media_type="image/png")
+        except:
+            return HTMLResponse(f"<h2>❌ Cannot load image</h2><a href='/'>Back</a>", status_code=500)
 
     @gui_app.get("/health")
     def health():
-        return {"status": "healthy", "comfy_port": COMFY_PORT, "gui_port": GUI_PORT}
+        """Endpoint untuk cek status dan log"""
+        try:
+            r = requests.get(f"{COMFY_API}/system_stats", timeout=5)
+            comfy_status = "ready" if r.ok else "error"
+        except:
+            comfy_status = "unreachable"
+        
+        # Baca log terakhir
+        log_tail = ""
+        try:
+            with open(f"{DATA_ROOT}/comfyui.log", "r") as f:
+                lines = f.readlines()
+                log_tail = "".join(lines[-20:])
+        except:
+            log_tail = "No log file found"
+        
+        return {
+            "status": "running",
+            "comfy_port": COMFY_PORT,
+            "gui_port": GUI_PORT,
+            "comfyui_status": comfy_status,
+            "log_tail": log_tail
+        }
 
-    # Give Modal time to register
-    time.sleep(2)
-    
     print(f"🚀 GUI ready! Serving on port {GUI_PORT}")
     return gui_app
