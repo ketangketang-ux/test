@@ -38,7 +38,7 @@ image = (
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
     .run_commands("pip install torchsde")  # FIX untuk k_diffusion
     .run_commands("pip install av")        # FIX untuk video/image processing
-    .run_commands("pip install comfyui-workflow-templates")  # FIX frontend templates
+    # .run_commands("pip install comfyui-workflow-templates")  # DIHAPUS: bermasalah di Modal
     .run_commands("pip install comfyui-embedded-docs")       # FIX embedded docs
     .run_commands("pip install alembic")                     # FIX database
     .run_commands("pip install pydantic-settings")           # FIX pyproject.toml parsing
@@ -73,6 +73,10 @@ def ui():
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
+    
+    # FIX: Buat dummy templates directory untuk menghindari error ComfyUI
+    templates_dir = "/usr/local/lib/python3.12/site-packages/comfyui_workflow_templates/templates"
+    os.makedirs(templates_dir, exist_ok=True)
     
     os.chdir(COMFY_DIR)
     
