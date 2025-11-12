@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI di Modal (100% WORKING)
+# ComfyUI + GUI di Modal (FORCE REBUILD IMAGE 100%)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -26,35 +26,33 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan SEMUA dependencies ComfyUI (FIXED!)
+# Image dengan FORCE REBUILD (cache-bust + install langsung)
+# .run_commands() ini PAKSA Modal rebuild layer ini!
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .pip_install(
-        # Core ML
-        "torch",
-        "torchvision",
-        "torchaudio",
-        
-        # ComfyUI essentials
-        "comfy-cli",
-        "einops",           # FIX: ini yang hilang!
+        "torch==2.3.1",
+        "torchvision==0.18.1",
+        "torchaudio==2.3.1",
         "transformers",
+        "diffusers",
         "safetensors",
+        "einops",           # FIX: Ini yang error
+        "pillow",
         "scipy",
         "numpy",
-        "pillow",
         "requests",
-        
-        # FastAPI GUI
-        "fastapi",
-        "uvicorn",
-        "python-multipart",
-        
-        # Download speedup
+        "tqdm",
+        "comfy-cli",
         "huggingface_hub[hf_transfer]",
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # Force rebuild: install lagi biar pasti ada (cache-bust)
+    .run_commands("pip install --force-reinstall einops pillow scipy numpy")
+    .env({
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "PYTORCH_ALLOC_CONF": "max_split_size_mb:512",
+    })
 )
 
 # Models (FLUX)
@@ -74,14 +72,14 @@ MODELS_LIST = [
 )
 @modal.web_server(GUI_PORT, startup_timeout=300)
 def ui():
-    # Setup directories
+    # Setup dirs
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
     
     os.chdir(COMFY_DIR)
     
-    # Download models (skip if exists)
+    # Download models
     for sub, fn, repo, subf in MODELS_LIST:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -95,13 +93,13 @@ def ui():
     
     vol.commit()
     
-    # Environment variables
+    # Environment
     os.environ.update({
         "COMFY_OUTPUT_PATH": OUTPUT_DIR,
         "COMFY_TEMP_PATH": TEMP_DIR,
     })
     
-    # Start ComfyUI di background thread
+    # Start ComfyUI
     def run_comfy():
         cmd = [
             "python", "main.py",
@@ -117,7 +115,7 @@ def ui():
     
     threading.Thread(target=run_comfy, daemon=True).start()
     
-    # CRITICAL: Wait for ComfyUI to be ready (health check)
+    # Wait for ComfyUI ready
     print("⏳ Waiting for ComfyUI to start...")
     for i in range(60):
         try:
@@ -129,9 +127,9 @@ def ui():
             pass
         time.sleep(1)
     else:
-        raise RuntimeError("❌ ComfyUI failed to start after 60s")
+        raise RuntimeError("❌ ComfyUI failed to start")
 
-    # Build FastAPI GUI
+    # Build GUI
     gui_app = FastAPI(title="ComfyUI Remote GUI")
     COMFY_API = f"http://127.0.0.1:{COMFY_PORT}"
 
