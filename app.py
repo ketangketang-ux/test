@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI di Modal (FORCE REBUILD IMAGE 100%)
+# ComfyUI + GUI di Modal (FIXED: build tokenizers dari source)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -26,19 +26,27 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan FORCE REBUILD (cache-bust + install langsung)
-# .run_commands() ini PAKSA Modal rebuild layer ini!
+# Image dengan BUILD TOOLS untuk compile tokenizers (Rust-based)
+# + Update pip ke versi terbaru
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
+    .apt_install(
+        "git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg",
+        "build-essential", "curl", "pkg-config"  # <-- FIX: Tools untuk compile
+    )
+    .run_commands("pip install --upgrade pip")  # <-- FIX: Upgrade pip dulu!
     .pip_install(
+        # Install tokenizers & einops DULU (yang sering error)
+        "tokenizers",
+        "einops",
+        
+        # Lanjutkan yang lain
         "torch==2.3.1",
         "torchvision==0.18.1",
         "torchaudio==2.3.1",
         "transformers",
         "diffusers",
         "safetensors",
-        "einops",           # FIX: Ini yang error
         "pillow",
         "scipy",
         "numpy",
@@ -47,8 +55,6 @@ image = (
         "comfy-cli",
         "huggingface_hub[hf_transfer]",
     )
-    # Force rebuild: install lagi biar pasti ada (cache-bust)
-    .run_commands("pip install --force-reinstall einops pillow scipy numpy")
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
         "PYTORCH_ALLOC_CONF": "max_split_size_mb:512",
