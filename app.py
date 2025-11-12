@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI di Modal (FORCE REBUILD 100%)
+# ComfyUI + GUI di Modal (FIXED: NO multi-line RUN!)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -26,25 +26,18 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan AGGRESSIVE CACHE BUST
-# .run_commands() yang panjang + timestamp PAKSA rebuild
-CACHE_BUST = "2024-11-12-07-00"  # GANTI INI setiap kali deploy!
-
+# Image dengan SATU PER SATI command (NGGAK ADA MULTI-LINE!)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install(
         "git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg",
         "build-essential", "curl", "pkg-config", "python3-dev"
     )
-    # PAKSA install semua dependencies dalam SATU command
-    # + --no-cache-dir biar nggak pakai pip cache
-    # + CACHE_BUST biar Modal rebuild layer ini
-    .run_commands(f"""
-        pip install --upgrade pip --no-cache-dir &&
-        pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --no-cache-dir &&
-        pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm comfy-cli huggingface_hub[hf_transfer] --no-cache-dir &&
-        echo "Cache bust: {CACHE_BUST}"
-    """)
+    .run_commands("pip install --upgrade pip")
+    .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
+    .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
+    .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
+    .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
         "PYTORCH_ALLOC_CONF": "max_split_size_mb:512",
