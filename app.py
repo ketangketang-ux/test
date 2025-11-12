@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# ComfyUI + GUI untuk Modal v1.2.2 (FIXED)
+# ComfyUI + GUI di Modal (SUDAH FIX PIL & semua issue)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -26,7 +26,7 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image
+# Image dengan dependencies (SUDAH TAMBAH PILLOW!)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
@@ -36,7 +36,10 @@ image = (
         "fastapi",
         "uvicorn",
         "python-multipart",
-        "huggingface_hub[hf_transfer]"
+        "huggingface_hub[hf_transfer]",
+        "pillow",  # <-- FIX: Ini yang hilang!
+        "torch",   # <-- FIX: Tambahan biar aman
+        "torchvision"
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
@@ -53,7 +56,6 @@ MODELS_LIST = [
 @app.function(
     gpu="L4",
     timeout=1800,
-    # ❌ HAPUS: concurrent_inputs=1  <- NGGAK ADA DI v1.2.2
     volumes={DATA_ROOT: vol},
     image=image,
 )
@@ -66,7 +68,7 @@ def ui():
     
     os.chdir(COMFY_DIR)
     
-    # Download models (skip kalau sudah ada)
+    # Download models
     for sub, fn, repo, subf in MODELS_LIST:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -76,7 +78,7 @@ def ui():
             out = hf_hub_download(repo_id=repo, filename=fn, subfolder=subf, local_dir=tmp)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             os.rename(out, target)
-            print(f"✅ Downloaded {fn} ({os.path.getsize(target)//1024//1024} MB)")
+            print(f"✅ Downloaded {fn}")
     
     vol.commit()
     
@@ -102,7 +104,7 @@ def ui():
     
     threading.Thread(target=run_comfy, daemon=True).start()
     
-    # CRITICAL: Tunggu ComfyUI benar-benar ready (health check)
+    # CRITICAL: Wait for ComfyUI to be ready
     print("⏳ Waiting for ComfyUI to start...")
     for i in range(60):
         try:
@@ -114,7 +116,7 @@ def ui():
             pass
         time.sleep(1)
     else:
-        raise RuntimeError("❌ ComfyUI failed to start after 60s")
+        raise RuntimeError("❌ ComfyUI failed to start")
 
     # Build GUI
     gui_app = FastAPI(title="ComfyUI Remote GUI")
@@ -195,11 +197,7 @@ def ui():
         r = requests.get(f"{COMFY_API}/view?filename={filename}&type=output")
         return HTMLResponse(content=r.content, media_type="image/png")
 
-    @gui_app.get("/health")
-    def health():
-        return {"status": "healthy", "comfy_port": COMFY_PORT, "gui_port": GUI_PORT}
-
-    # Give Modal time to register
+    # WAIT for Modal to register
     time.sleep(2)
     
     print(f"🚀 GUI ready! Serving on port {GUI_PORT}")
