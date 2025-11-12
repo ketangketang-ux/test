@@ -38,6 +38,9 @@ image = (
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
     .run_commands("pip install torchsde")  # FIX untuk k_diffusion
     .run_commands("pip install av")        # FIX untuk video/image processing
+    .run_commands("pip install comfyui-workflow-templates")  # FIX frontend templates
+    .run_commands("pip install comfyui-embedded-docs")       # FIX embedded docs
+    .run_commands("pip install alembic")                     # FIX database
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
