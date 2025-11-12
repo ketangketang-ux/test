@@ -26,7 +26,7 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image dengan SATU PER SATI command (NGGAK ADA MULTI-LINE!)
+# Image dengan SATU PER SATU command (NGGAK ADA MULTI-LINE!)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install(
@@ -36,7 +36,8 @@ image = (
     .run_commands("pip install --upgrade pip")
     .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
-    .run_commands("pip install torchsde")  # FIX: Tambahkan ini untuk k_diffusion sampling
+    .run_commands("pip install torchsde")  # FIX untuk k_diffusion
+    .run_commands("pip install av")        # FIX untuk video/image processing
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
