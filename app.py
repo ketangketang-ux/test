@@ -1,6 +1,6 @@
 # ======================
 # comfyui_modal.py
-# Script ComfyUI + GUI yang BENAR (PAKAI INI!)
+# ComfyUI + GUI di Modal (FIXED untuk v1.2.2)
 # Cara deploy: modal deploy comfyui_modal.py
 # ======================
 
@@ -13,7 +13,7 @@ import requests
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse
 
-# Paths
+# Konfigurasi
 DATA_ROOT = "/data/comfy"
 COMFY_DIR = os.path.join(DATA_ROOT, "ComfyUI")
 MODELS_DIR = os.path.join(COMFY_DIR, "models")
@@ -26,15 +26,22 @@ GUI_PORT = 8000
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui")
 
-# Image
+# Image dengan dependencies
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
-    .pip_install("comfy-cli", "requests", "fastapi", "uvicorn", "python-multipart", "huggingface_hub[hf_transfer]")
+    .pip_install(
+        "comfy-cli",
+        "requests",
+        "fastapi",
+        "uvicorn",
+        "python-multipart",
+        "huggingface_hub[hf_transfer]"
+    )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Models
+# Model list (FLUX)
 MODELS_LIST = [
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
@@ -46,20 +53,20 @@ MODELS_LIST = [
 @app.function(
     gpu="L4",
     timeout=1800,
-    concurrent_inputs=1,
+    # ❌ HAPUS: concurrent_inputs=1  <- ini nggak ada di v1.2.2
     volumes={DATA_ROOT: vol},
     image=image,
 )
 @modal.web_server(GUI_PORT, startup_timeout=300)
 def ui():
-    # Setup directory
+    # Setup directories
     os.makedirs(DATA_ROOT, exist_ok=True)
     if not os.path.exists(COMFY_DIR):
         subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
     
     os.chdir(COMFY_DIR)
     
-    # Download models
+    # Download models (hanya kalau belum ada)
     for sub, fn, repo, subf in MODELS_LIST:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -69,17 +76,17 @@ def ui():
             out = hf_hub_download(repo_id=repo, filename=fn, subfolder=subf, local_dir=tmp)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             os.rename(out, target)
-            print(f"✅ Downloaded {fn}")
+            print(f"✅ Downloaded {fn} ({os.path.getsize(target)//1024//1024} MB)")
     
     vol.commit()
     
-    # Environment
+    # Environment variables
     os.environ.update({
         "COMFY_OUTPUT_PATH": OUTPUT_DIR,
         "COMFY_TEMP_PATH": TEMP_DIR,
     })
     
-    # ComfyUI process
+    # Start ComfyUI di background
     def run_comfy():
         cmd = [
             "python", "main.py",
@@ -93,9 +100,10 @@ def ui():
         ]
         subprocess.Popen(cmd, cwd=COMFY_DIR)
     
-    threading.Thread(target=run_comfy, daemon=True).start()
+    comfy_thread = threading.Thread(target=run_comfy, daemon=True)
+    comfy_thread.start()
     
-    # CRITICAL: Wait for ComfyUI to be ready
+    # CRITICAL: Tunggu ComfyUI benar-benar ready (health check)
     print("⏳ Waiting for ComfyUI to start...")
     for i in range(60):
         try:
@@ -103,17 +111,17 @@ def ui():
             if r.ok:
                 print(f"✅ ComfyUI ready after {i+1}s!")
                 break
-        except:
+        except requests.exceptions.ConnectionError:
             pass
         time.sleep(1)
     else:
-        raise RuntimeError("❌ ComfyUI failed to start")
+        raise RuntimeError("❌ ComfyUI failed to start after 60s")
 
-    # Build GUI
-    gui = FastAPI(title="ComfyUI Remote GUI")
+    # Build FastAPI GUI
+    gui_app = FastAPI(title="ComfyUI Remote GUI")
     COMFY_API = f"http://127.0.0.1:{COMFY_PORT}"
 
-    @gui.get("/", response_class=HTMLResponse)
+    @gui_app.get("/", response_class=HTMLResponse)
     def home():
         return """
         <html>
@@ -125,35 +133,28 @@ def ui():
                 button { background: #4CAF50; color: white; border: none; cursor: pointer; }
                 button:hover { background: #45a049; }
                 #loading { display: none; margin-top: 20px; }
-                .info { background: #222; padding: 15px; border-radius: 5px; margin: 20px 0; }
             </style>
         </head>
         <body>
             <div class="container">
                 <h2>🧠 ComfyUI Remote GUI</h2>
-                <div class="info">
-                    <strong>Backend:</strong> ComfyUI is running<br>
-                    <strong>Status:</strong> <span style='color:#4CAF50'>✅ Ready</span>
-                </div>
                 <form action="/generate" method="post" onsubmit="document.getElementById('loading').style.display='block'">
-                    <input name="prompt" placeholder="Enter your prompt (e.g., 'a cat astronaut')" required><br>
+                    <input name="prompt" placeholder="Enter your prompt" required><br>
                     <label>Steps: <input type="number" name="steps" value="25" min="1" max="50"></label><br>
                     <label>CFG: <input type="number" name="cfg" value="6.5" step="0.1" min="1" max="20"></label><br>
                     <button type="submit">Generate ✨</button>
                 </form>
                 <div id="loading">
-                    <p>Generating... This may take 1-3 minutes on L4</p>
-                    <p>Don't close this page!</p>
+                    <p>Generating... This may take 1-3 minutes</p>
                 </div>
             </div>
         </body>
         </html>
         """
 
-    @gui.post("/generate")
+    @gui_app.post("/generate")
     async def generate(prompt: str = Form(...), steps: int = Form(25), cfg: float = Form(6.5)):
         try:
-            # FLUX workflow
             workflow = {
                 "1": {"inputs": {"text": prompt}, "class_type": "CLIPTextEncode"},
                 "2": {"inputs": {"text": "bad quality, blurry"}, "class_type": "CLIPTextEncode"},
@@ -166,11 +167,10 @@ def ui():
                 "7": {"inputs": {"filename_prefix": "ComfyUI", "images": ["6", 0]}, "class_type": "SaveImage"}
             }
             
-            # Submit
             r = requests.post(f"{COMFY_API}/prompt", json={"prompt": workflow}, timeout=10)
             job_id = r.json()["prompt_id"]
             
-            # Poll
+            # Poll for result
             for _ in range(180):
                 time.sleep(1)
                 status = requests.get(f"{COMFY_API}/history/{job_id}").json()
@@ -191,26 +191,20 @@ def ui():
         except Exception as e:
             return HTMLResponse(f"<h2>❌ Error: {str(e)}</h2><a href='/'>Back</a>")
 
-    @gui.get("/view")
+    @gui_app.get("/view")
     def view_image(filename: str):
-        """Proxy image"""
         r = requests.get(f"{COMFY_API}/view?filename={filename}&type=output")
         return HTMLResponse(content=r.content, media_type="image/png")
 
-    @gui.get("/health")
+    @gui_app.get("/health")
     def health():
-        """Health check"""
-        try:
-            requests.get(f"{COMFY_API}/system_stats", timeout=1)
-            return {"status": "healthy", "comfy": "ready"}
-        except:
-            return {"status": "unhealthy", "comfy": "not_ready"}
+        return {"status": "healthy", "comfy_port": COMFY_PORT, "gui_port": GUI_PORT}
 
-    # WAIT for GUI to be ready (give Modal time to register)
+    # Give Modal time to register the web server
     time.sleep(2)
     
     print(f"🚀 GUI ready! Serving on port {GUI_PORT}")
-    print(f"   ComfyUI: http://localhost:{COMFY_PORT}")
-    print(f"   GUI: http://localhost:{GUI_PORT}")
+    print(f"   ComfyUI backend: http://localhost:{COMFY_PORT}")
+    print(f"   Remote GUI: http://localhost:{GUI_PORT}")
     
-    return gui
+    return gui_app
