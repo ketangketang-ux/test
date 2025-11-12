@@ -36,6 +36,7 @@ image = (
     .run_commands("pip install --upgrade pip")
     .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
     .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
+    .run_commands("pip install torchsde")  # FIX: Tambahkan ini untuk k_diffusion sampling
     .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
     .run_commands("pip install fastapi uvicorn python-multipart")
     .env({
