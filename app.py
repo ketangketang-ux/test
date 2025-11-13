@@ -1,248 +1,244 @@
-# ======================
-# comfyui_modal.py
-# ComfyUI + GUI di Modal (FINAL FIX - All Dependencies)
-# Cara deploy: modal deploy comfyui_modal.py
-# ======================
-
 import os
-import modal
+import shutil
 import subprocess
-import threading
-import time
-import requests
-from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse
+from typing import Optional
+from huggingface_hub import hf_hub_download
 
-# Konfigurasi
+# Paths
 DATA_ROOT = "/data/comfy"
-COMFY_DIR = os.path.join(DATA_ROOT, "ComfyUI")
-MODELS_DIR = os.path.join(COMFY_DIR, "models")
-OUTPUT_DIR = os.path.join(COMFY_DIR, "output")
-TEMP_DIR = os.path.join(COMFY_DIR, "temp")
-COMFY_PORT = 8188
-GUI_PORT = 8000
+DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
+CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
+MODELS_DIR = os.path.join(DATA_BASE, "models")
+TMP_DL = "/tmp/download"
 
-# Modal setup
-vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui")
+# ComfyUI default install location
+DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
-# Image dengan dependencies lengkap (SEMUA SEKALIGUS)
+def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
+    name = node_repo.split("/")[-1]
+    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
+    cmd = f"git clone https://github.com/{node_repo} {dest}"
+    if recursive:
+        cmd += " --recursive"
+    if install_reqs:
+        cmd += f" && pip install -r {dest}/requirements.txt"
+    return cmd
+
+def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
+    out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir=TMP_DL)
+    target = os.path.join(MODELS_DIR, subdir)
+    os.makedirs(target, exist_ok=True)
+    shutil.move(out, os.path.join(target, filename))
+
+import modal
+
+# Build image with ComfyUI installed to default location /root/comfy/ComfyUI
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install(
-        "git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg",
-        "build-essential", "curl", "pkg-config", "python3-dev"
-    )
-    .run_commands("pip install --upgrade pip")
-    .run_commands("pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1")
-    .run_commands("pip install tokenizers einops transformers diffusers safetensors pillow scipy numpy requests tqdm")
-    # SEMUA dependencies ComfyUI terbaru + custom nodes dalam SATU BARIS
-    .run_commands("pip install torchsde av alembic pydantic-settings piexif opencv-python gguf accelerate psutil kornia matplotlib")
-    .run_commands("pip install comfyui-embedded-docs")
-    .run_commands("pip install comfy-cli huggingface_hub[hf_transfer]")
-    .run_commands("pip install fastapi uvicorn python-multipart")
-    .env({
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        "PYTORCH_ALLOC_CONF": "max_split_size_mb:512",
-    })
+    .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
+    .run_commands([
+        "pip install --upgrade pip",
+        "pip install --no-cache-dir comfy-cli uv",
+        "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
+        # Install ComfyUI to default location
+        "comfy --skip-prompt install --nvidia"
+    ])
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Models (FLUX)
-MODELS_LIST = [
+# Install nodes to default ComfyUI location during build
+image = image.run_commands([
+    "comfy node install rgthree-comfy comfyui-impact-pack comfyui-impact-subpack ComfyUI-YOLO comfyui-inspire-pack comfyui_ipadapter_plus wlsh_nodes ComfyUI_Comfyroll_CustomNodes comfyui_essentials ComfyUI-GGUF"
+])
+
+# Git-based nodes baked into image at default ComfyUI location
+for repo, flags in [
+    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
+    ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
+    ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
+    ("receyuki/comfyui-prompt-reader-node", {'recursive': True, 'install_reqs': True}),
+]:
+    image = image.run_commands([git_clone_cmd(repo, **flags)])
+
+# Model download tasks (will be done at runtime)
+model_tasks = [
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
     ("clip/FLUX", "clip_l.safetensors", "comfyanonymous/flux_text_encoders", None),
     ("checkpoints", "flux1-dev-fp8-all-in-one.safetensors", "camenduru/FLUX.1-dev", None),
+    ("loras", "mjV6.safetensors", "strangerzonehf/Flux-Midjourney-Mix2-LoRA", None),
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
+extra_cmds = [
+    f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
+]
+
+# Create volume
+vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
+app = modal.App(name="comfyui", image=image)
+
 @app.function(
-    gpu="L4",
+    max_containers=1,
+    scaledown_window=300,
     timeout=1800,
+    gpu=os.environ.get('MODAL_GPU_TYPE', 'A100-40GB'),
     volumes={DATA_ROOT: vol},
-    image=image,
 )
-@modal.web_server(GUI_PORT, startup_timeout=300)
+@modal.concurrent(max_inputs=10)
+@modal.web_server(8000, startup_timeout=300)  # Increased timeout for handling restarts
 def ui():
-    # Setup folders
-    os.makedirs(DATA_ROOT, exist_ok=True)
-    if not os.path.exists(COMFY_DIR):
-        subprocess.run(f"cp -r /root/comfy/ComfyUI {DATA_ROOT}/", shell=True, check=True)
+    # Check if volume is empty (first run)
+    if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
+        print("First run detected. Copying ComfyUI from default location to volume...")
+        
+        # Ensure DATA_ROOT exists
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        
+        # Copy ComfyUI from default location to volume
+        if os.path.exists(DEFAULT_COMFY_DIR):
+            print(f"Copying {DEFAULT_COMFY_DIR} to {DATA_BASE}")
+            subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=True)
+        else:
+            print(f"Warning: {DEFAULT_COMFY_DIR} not found, creating empty structure")
+            os.makedirs(DATA_BASE, exist_ok=True)
     
-    # FIX: Buat dummy templates directory
-    os.makedirs("/usr/local/lib/python3.12/site-packages/comfyui_workflow_templates/templates", exist_ok=True)
-    
-    os.chdir(COMFY_DIR)
-    
-    # Download models (hanya jika belum ada)
-    for sub, fn, repo, subf in MODELS_LIST:
+    # Fix detached HEAD and update ComfyUI backend to the latest version
+    print("Fixing git branch and updating ComfyUI backend to the latest version...")
+    os.chdir(DATA_BASE)
+    try:
+        # Check if in detached HEAD state
+        result = subprocess.run("git symbolic-ref HEAD", shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print("Detected detached HEAD, checking out main branch...")
+            subprocess.run("git checkout -B main origin/main", shell=True, check=True, capture_output=True, text=True)
+            print("Successfully checked out main branch")
+        # Configure pull strategy to fast-forward only
+        subprocess.run("git config pull.ff only", shell=True, check=True, capture_output=True, text=True)
+        # Perform git pull
+        result = subprocess.run("git pull --ff-only", shell=True, check=True, capture_output=True, text=True)
+        print("Git pull output:", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error updating ComfyUI backend: {e.stderr}")
+    except Exception as e:
+        print(f"Unexpected error during backend update: {e}")
+
+    # Update ComfyUI-Manager to the latest version
+    manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
+    if os.path.exists(manager_dir):
+        print("Updating ComfyUI-Manager to the latest version...")
+        os.chdir(manager_dir)
+        try:
+            # Configure pull strategy for ComfyUI-Manager
+            subprocess.run("git config pull.ff only", shell=True, check=True, capture_output=True, text=True)
+            result = subprocess.run("git pull --ff-only", shell=True, check=True, capture_output=True, text=True)
+            print("ComfyUI-Manager git pull output:", result.stdout)
+        except subprocess.CalledProcessError as e:
+            print(f"Error updating ComfyUI-Manager: {e.stderr}")
+        except Exception as e:
+            print(f"Unexpected error during ComfyUI-Manager update: {e}")
+        os.chdir(DATA_BASE)  # Return to base directory
+    else:
+        print("ComfyUI-Manager directory not found, installing...")
+        try:
+            subprocess.run("comfy node install ComfyUI-Manager", shell=True, check=True, capture_output=True, text=True)
+            print("ComfyUI-Manager installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"Error installing ComfyUI-Manager: {e.stderr}")
+
+    # Upgrade pip at runtime
+    print("Upgrading pip at runtime...")
+    try:
+        result = subprocess.run("pip install --no-cache-dir --upgrade pip", shell=True, check=True, capture_output=True, text=True)
+        print("pip upgrade output:", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error upgrading pip: {e.stderr}")
+    except Exception as e:
+        print(f"Unexpected error during pip upgrade: {e}")
+
+    # Upgrade comfy-cli at runtime
+    print("Upgrading comfy-cli at runtime...")
+    try:
+        result = subprocess.run("pip install --no-cache-dir --upgrade comfy-cli", shell=True, check=True, capture_output=True, text=True)
+        print("comfy-cli upgrade output:", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error upgrading comfy-cli: {e.stderr}")
+    except Exception as e:
+        print(f"Unexpected error during comfy-cli upgrade: {e}")
+
+    # Update ComfyUI frontend by installing requirements
+    print("Updating ComfyUI frontend by installing requirements...")
+    requirements_path = os.path.join(DATA_BASE, "requirements.txt")
+    if os.path.exists(requirements_path):
+        try:
+            result = subprocess.run(
+                f"/usr/local/bin/python -m pip install -r {requirements_path}",
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("Frontend update output:", result.stdout)
+        except subprocess.CalledProcessError as e:
+            print(f"Error updating ComfyUI frontend: {e.stderr}")
+        except Exception as e:
+            print(f"Unexpected error during frontend update: {e}")
+    else:
+        print(f"Warning: {requirements_path} not found, skipping frontend update")
+
+    # Configure ComfyUI-Manager: Disable auto-fetch, set weak security, and disable file logging
+    manager_config_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
+    manager_config_path = os.path.join(manager_config_dir, "config.ini")
+    print("Configuring ComfyUI-Manager: Disabling auto-fetch, setting security_level to weak, and disabling file logging...")
+    os.makedirs(manager_config_dir, exist_ok=True)
+    config_content = "[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n"
+    with open(manager_config_path, "w") as f:
+        f.write(config_content)
+    print(f"Updated {manager_config_path} with network_mode=private, security_level=weak, log_to_file=false")
+
+    # Ensure all required directories exist
+    for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
+        os.makedirs(d, exist_ok=True)
+
+    # Download models at runtime (only if missing)
+    print("Checking and downloading missing models...")
+    for sub, fn, repo, subf in model_tasks:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
-            from huggingface_hub import hf_hub_download
-            tmp = "/tmp/download"
-            os.makedirs(tmp, exist_ok=True)
-            out = hf_hub_download(repo_id=repo, filename=fn, subfolder=subf, local_dir=tmp)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            os.rename(out, target)
-            print(f"✅ Downloaded {fn} ({os.path.getsize(target)//1024//1024} MB)")
-    
-    vol.commit()
-    
-    # Environment
-    os.environ.update({
-        "COMFY_OUTPUT_PATH": OUTPUT_DIR,
-        "COMFY_TEMP_PATH": TEMP_DIR,
-    })
-    
-    # Start ComfyUI dengan logging ke file
-    log_file = f"{DATA_ROOT}/comfyui.log"
-    cmd = [
-        "python", "main.py",
-        "--listen", "0.0.0.0",
-        "--port", str(COMFY_PORT),
-        "--force-fp16",
-        "--disable-xformers",
-        "--enable-cors-header", "*",
-        "--output-directory", OUTPUT_DIR,
-        "--temp-directory", TEMP_DIR,
-    ]
-    
-    def run_comfy():
-        with open(log_file, "a") as f:
-            subprocess.Popen(cmd, cwd=COMFY_DIR, stdout=f, stderr=subprocess.STDOUT)
-    
-    threading.Thread(target=run_comfy, daemon=True).start()
-    
-    # Tunggu lebih lama (120 detik) dengan feedback
-    print("⏳ Waiting for ComfyUI to start (max 120s)...")
-    for i in range(120):
-        try:
-            time.sleep(1)
-            if i % 10 == 0:
-                print(f"⏳ Still waiting... {i}s elapsed")
-            
-            r = requests.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=2)
-            if r.ok:
-                print(f"✅ ComfyUI ready after {i+1}s!")
-                break
-        except:
-            pass
-    else:
-        # Baca log terakhir untuk debugging
-        try:
-            with open(log_file, "r") as f:
-                print(f"📋 ComfyUI Log Terakhir:\n{f.read()[-500:]}")
-        except:
-            pass
-        raise RuntimeError("❌ ComfyUI failed to start. Cek log di /health endpoint")
+            print(f"Downloading {fn} to {target}...")
+            try:
+                hf_download(sub, fn, repo, subf)
+                print(f"Successfully downloaded {fn}")
+            except Exception as e:
+                print(f"Error downloading {fn}: {e}")
+        else:
+            print(f"Model {fn} already exists, skipping download")
 
-    # Build GUI
-    gui_app = FastAPI(title="ComfyUI Remote GUI")
-    COMFY_API = f"http://127.0.0.1:{COMFY_PORT}"
-
-    @gui_app.get("/", response_class=HTMLResponse)
-    def home():
-        return """
-        <html>
-        <head>
-            <style>
-                body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
-                .container { max-width: 800px; margin: 0 auto; }
-                input, button { width: 100%; padding: 12px; margin: 10px 0; font-size: 16px; }
-                button { background: #4CAF50; color: white; border: none; cursor: pointer; }
-                button:hover { background: #45a049; }
-                #loading { display: none; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h2>🧠 ComfyUI Remote GUI</h2>
-                <form action="/generate" method="post" onsubmit="document.getElementById('loading').style.display='block'">
-                    <input name="prompt" placeholder="Enter your prompt" required><br>
-                    <label>Steps: <input type="number" name="steps" value="25" min="1" max="50"></label><br>
-                    <label>CFG: <input type="number" name="cfg" value="6.5" step="0.1" min="1" max="20"></label><br>
-                    <button type="submit">Generate ✨</button>
-                </form>
-                <div id="loading">
-                    <p>Generating... This may take 1-3 minutes</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-    @gui_app.post("/generate")
-    async def generate(prompt: str = Form(...), steps: int = Form(25), cfg: float = Form(6.5)):
+    # Run extra download commands
+    print("Running additional downloads...")
+    for cmd in extra_cmds:
         try:
-            workflow = {
-                "1": {"inputs": {"text": prompt}, "class_type": "CLIPTextEncode"},
-                "2": {"inputs": {"text": "bad quality, blurry"}, "class_type": "CLIPTextEncode"},
-                "3": {"inputs": {"ckpt_name": "flux1-dev-fp8-all-in-one.safetensors"}, "class_type": "CheckpointLoaderSimple"},
-                "4": {"inputs": {"width": 1024, "height": 1024, "batch_size": 1}, "class_type": "EmptyLatentImage"},
-                "5": {"inputs": {"seed": -1, "steps": steps, "cfg": cfg, "sampler_name": "dpmpp_2m", "scheduler": "normal", 
-                               "denoise": 1, "model": ["3", 0], "positive": ["1", 0], "negative": ["2", 0], "latent_image": ["4", 0]}, 
-                      "class_type": "KSampler"},
-                "6": {"inputs": {"samples": ["5", 0], "vae": ["3", 2]}, "class_type": "VAEDecode"},
-                "7": {"inputs": {"filename_prefix": "ComfyUI", "images": ["6", 0]}, "class_type": "SaveImage"}
-            }
-            
-            r = requests.post(f"{COMFY_API}/prompt", json={"prompt": workflow}, timeout=10)
-            job_id = r.json()["prompt_id"]
-            
-            # Poll for result
-            for _ in range(180):
-                time.sleep(1)
-                status = requests.get(f"{COMFY_API}/history/{job_id}").json()
-                if job_id in status and status[job_id]["status"]["completed"]:
-                    if "7" in status[job_id]["outputs"]:
-                        img_info = status[job_id]["outputs"]["7"]["images"][0]
-                        filename = img_info["filename"]
-                        return HTMLResponse(f"""
-                        <html><body style='background:#000;color:#fff;text-align:center;padding:40px;'>
-                        <h2>✅ Generated!</h2>
-                        <img src="/view?filename={filename}" style='max-width:90%;border:2px solid #666;margin:20px;'><br>
-                        <a href="/">← Generate Again</a>
-                        </body></html>
-                        """)
-            
-            return HTMLResponse(f"<h2>❌ Timeout after 180s</h2><a href='/'>Back</a>")
-        
+            print(f"Running: {cmd}")
+            result = subprocess.run(cmd, shell=True, check=False, cwd=DATA_BASE, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"Command completed successfully")
+            else:
+                print(f"Command failed with return code {result.returncode}: {result.stderr}")
         except Exception as e:
-            return HTMLResponse(f"<h2>❌ Error: {str(e)}</h2><a href='/'>Back</a>")
+            print(f"Error running command {cmd}: {e}")
 
-    @gui_app.get("/view")
-    def view_image(filename: str):
-        try:
-            r = requests.get(f"{COMFY_API}/view?filename={filename}&type=output")
-            return HTMLResponse(content=r.content, media_type="image/png")
-        except:
-            return HTMLResponse(f"<h2>❌ Cannot load image</h2><a href='/'>Back</a>", status_code=500)
-
-    @gui_app.get("/health")
-    def health():
-        """Endpoint untuk cek status dan log"""
-        try:
-            r = requests.get(f"{COMFY_API}/system_stats", timeout=5)
-            comfy_status = "ready" if r.ok else "error"
-        except:
-            comfy_status = "unreachable"
-        
-        # Baca log terakhir
-        log_tail = ""
-        try:
-            with open(f"{DATA_ROOT}/comfyui.log", "r") as f:
-                lines = f.readlines()
-                log_tail = "".join(lines[-20:])
-        except:
-            log_tail = "No log file found"
-        
-        return {
-            "status": "running",
-            "comfy_port": COMFY_PORT,
-            "gui_port": GUI_PORT,
-            "comfyui_status": comfy_status,
-            "log_tail": log_tail
-        }
-
-    print(f"🚀 GUI ready! Serving on port {GUI_PORT}")
-    return gui_app
+    # Set COMFY_DIR environment variable to volume location
+    os.environ["COMFY_DIR"] = DATA_BASE
+    
+    # Launch ComfyUI from volume location
+    print(f"Starting ComfyUI from {DATA_BASE}...")
+    
+    # Start ComfyUI server with correct syntax and latest frontend
+    cmd = ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"]
+    print(f"Executing: {' '.join(cmd)}")
+    
+    process = subprocess.Popen(
+        cmd,
+        cwd=DATA_BASE,
+        env=os.environ.copy()
+    )
