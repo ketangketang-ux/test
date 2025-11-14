@@ -41,7 +41,9 @@ image = (
         "pip install --no-cache-dir comfy-cli uv",
         "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
         # Install ComfyUI to default location
-        "comfy --skip-prompt install --nvidia"
+        "comfy --skip-prompt install --nvidia",
+        # Install InsightFace for IPAdapter FaceID
+        "pip install insightface onnxruntime-gpu"
     ])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
@@ -71,7 +73,10 @@ model_tasks = [
 ]
 
 extra_cmds = [
-    f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
+    f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth  -P {MODELS_DIR}/upscale_models",
+    # Download InsightFace model
+    "mkdir -p /root/.insightface/models",
+    "wget -q https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip -O /tmp/buffalo_l.zip && unzip -q /tmp/buffalo_l.zip -d /root/.insightface/models/ && rm /tmp/buffalo_l.zip",
 ]
 
 # Create volume
