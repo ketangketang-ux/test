@@ -43,7 +43,6 @@ image = (
         # Install ComfyUI to default location
         "comfy --skip-prompt install --nvidia",
         # Install InsightFace for IPAdapter FaceID (Pre-built wheel)
-        "pip install https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl",
         "pip install onnxruntime-gpu"
     ])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
