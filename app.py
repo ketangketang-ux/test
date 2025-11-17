@@ -13,25 +13,24 @@ TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
-# === SINGLE-LINE ZIP FALLBACK GIT CLONE (FIXED FOR MODAL) ===
-def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
-    """
-    Safe single-line clone with ZIP fallback for Modal.
-    """
-    name = node_repo.split("/")[-1]
-    git_url = f"https://github.com/{node_repo}.git"
-    zip_url = f"https://github.com/{node_repo}/archive/refs/heads/main.zip"
-    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
-
+# === SUPER SAFE SINGLE-LINE CLONE (NO MULTILINE, NO SUBSHELL) ===
+def git_clone_cmd(repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
+    name = repo.split("/")[-1]
+    dest = f"{DEFAULT_COMFY_DIR}/custom_nodes/{name}"
     rec = "--recursive" if recursive else ""
+    zip_url = f"https://github.com/{repo}/archive/refs/heads/main.zip"
+    zip_path = f"/tmp/{name}.zip"
 
     cmd = (
-        f"mkdir -p {os.path.dirname(dest)} && "
+        f"mkdir -p $(dirname {dest}) && "
         f"export GIT_TERMINAL_PROMPT=0 && "
-        f"git clone --depth 1 {rec} {git_url} {dest} || "
-        f"(echo clone_fail_zip && wget -q -O /tmp/{name}.zip {zip_url} && "
-        f"unzip -q /tmp/{name}.zip -d /tmp && rm -rf {dest} && "
-        f"mv /tmp/{name}-main {dest} && rm -f /tmp/{name}.zip)"
+        f"git clone --depth 1 {rec} https://github.com/{repo}.git {dest} || "
+        f"echo clone_fail && "
+        f"wget -q -O {zip_path} {zip_url} && "
+        f"unzip -q {zip_path} -d /tmp && "
+        f"rm -rf {dest} && "
+        f"mv /tmp/{name}-main {dest} && "
+        f"rm -f {zip_path}"
     )
 
     if install_reqs:
@@ -100,7 +99,7 @@ MANDATORY_NODES = [
 image = image.run_commands([" ".join(["comfy", "node", "install"] + MANDATORY_NODES)])
 
 
-# === QWEN NODES (PUBLIC, NO AUTH NEEDED) ===
+# === QWEN NODES (PUBLIC REPO, NO AUTH) ===
 QWEN_REPOS = [
     "QwenLM/Qwen2-VL-Node",
     "QwenLM/Qwen2-VL-ComfyUI",
