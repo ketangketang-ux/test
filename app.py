@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-from typing import Optional
 from huggingface_hub import hf_hub_download
 
 # =============================================
@@ -16,15 +15,12 @@ DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
 # =============================================
-# ZIP INSTALLER WITH BRANCH SUPPORT
+# ZIP INSTALLER (SAFE FOR MODAL)
 # =============================================
 
-def install_zip_repo(repo: str, branch: str = "main") -> str:
-    """
-    Install any GitHub repo via ZIP, choosing correct branch.
-    Fully Modal-safe (no git clone).
-    """
-    name = repo.split("/")[-1]
+def install_zip(repo: str, name: str = None, branch: str = "main") -> str:
+    if name is None:
+        name = repo.split("/")[-1]
     dest = f"{DEFAULT_COMFY_DIR}/custom_nodes/{name}"
     zip_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
 
@@ -38,14 +34,21 @@ def install_zip_repo(repo: str, branch: str = "main") -> str:
 
 
 # =============================================
-# HUGGINGFACE DOWNLOAD
+# HUGGINGFACE MODEL DOWNLOAD
 # =============================================
 
-def hf_download(folder, fn, repo, sub=None):
-    out = hf_hub_download(repo_id=repo, filename=fn, subfolder=sub, local_dir="/tmp")
-    tgt = os.path.join(MODELS_DIR, folder)
-    os.makedirs(tgt, exist_ok=True)
-    shutil.move(out, os.path.join(tgt, fn))
+def hf_download(folder, filename, repo, subfolder=None):
+    file_path = hf_hub_download(
+        repo_id=repo,
+        filename=filename,
+        subfolder=subfolder,
+        local_dir="/tmp"
+    )
+
+    target_dir = os.path.join(MODELS_DIR, folder)
+    os.makedirs(target_dir, exist_ok=True)
+
+    shutil.move(file_path, os.path.join(target_dir, filename))
 
 
 # =============================================
@@ -62,7 +65,7 @@ image = (
 
 
 # =============================================
-# INSTALL COMFYUI VIA ZIP (NO comfy-cli)
+# INSTALL COMFYUI (ZIP ONLY)
 # =============================================
 
 image = image.run_commands([
@@ -77,48 +80,62 @@ image = image.run_commands([
 
 
 # =============================================
-# INSTALL QWEN NODES (branch FIXED)
+# INSTALL QWEN NODES
 # =============================================
 
-# 🔥 Qwen2-VL-Node uses *dev* branch (NOT main)
-image = image.run_commands([install_zip_repo("QwenLM/Qwen2-VL-Node", branch="dev")])
+# Qwen2-Image (official & working)
+image = image.run_commands([
+    install_zip("QwenLM/Qwen2-Image", branch="main")
+])
 
-# These use main
-image = image.run_commands([install_zip_repo("QwenLM/Qwen2-VL-ComfyUI", branch="main")])
-image = image.run_commands([install_zip_repo("QwenLM/Qwen2-Image", branch="main")])
+# Qwen Vision-Language Node (community, stable ZIP)
+image = image.run_commands([
+    install_zip("Fe-EAI/ComfyUI-QwenVL-Node", branch="main")
+])
 
 
 # =============================================
-# OPTIONAL ENHANCEMENT NODES (safe ZIP)
+# OPTIONAL ENHANCEMENT NODES (SAFE)
 # =============================================
 
-EXTRA = [
+extra_nodes = [
     ("ssitu/ComfyUI_UltimateSDUpscale", "main"),
     ("ltdrdata/ComfyUI-IPAdapter-Plus", "main")
 ]
 
-for repo, branch in EXTRA:
-    image = image.run_commands([install_zip_repo(repo, branch=branch)])
+for repo, branch in extra_nodes:
+    image = image.run_commands([install_zip(repo, branch=branch)])
 
 
 # =============================================
-# FINAL APP
+# APP INITIALIZATION
 # =============================================
 
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui", image=image)
+
+app = modal.App(
+    name="comfyui",
+    image=image,
+)
 
 
-@app.function(gpu="A100-40GB", volumes={DATA_ROOT: vol})
+@app.function(
+    gpu="A100-40GB",
+    volumes={DATA_ROOT: vol},
+)
 @modal.web_server(8000)
 def ui():
+
     os.environ["COMFY_DIR"] = DATA_BASE
 
+    # First-time copy to volume
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         os.makedirs(DATA_ROOT, exist_ok=True)
         subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
 
+    # Launch ComfyUI
     subprocess.Popen(
         ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8000"],
-        cwd=DATA_BASE
+        cwd=DATA_BASE,
+        env=os.environ.copy()
     )
