@@ -20,6 +20,7 @@ def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = 
     if recursive:
         cmd += " --recursive"
     if install_reqs:
+        # Install requirements after clone
         cmd += f" && pip install -r {dest}/requirements.txt"
     return cmd
 
@@ -54,9 +55,7 @@ def setup_insightface_persistent():
     print("SETUP INSIGHTFACE DIMULAI...")
     print("="*60)
     
-    # Path di Modal Volume (persistent)
     insightface_vol = os.path.join(DATA_ROOT, ".insightface", "models")
-    # Path default di home (tempat InsightFace cari)
     insightface_home = "/root/.insightface"
     insightface_home_models = os.path.join(insightface_home, "models")
     
@@ -66,7 +65,6 @@ def setup_insightface_persistent():
         os.makedirs(insightface_vol, exist_ok=True)
         
         try:
-            # Download (FIX: hapus spasi di URL)
             zip_path = os.path.join(insightface_vol, "buffalo_l.zip")
             subprocess.run([
                 "wget", "-q", "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
@@ -129,33 +127,52 @@ image = (
         "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia",
         "pip install insightface onnxruntime-gpu",
-        # Qwen dependencies
-        "pip install -U openai qwen-vl-utils transformers accelerate",
+        # Qwen dependencies - INSTALLED DURING IMAGE BUILD
+        "pip install -U openai qwen-vl-utils transformers accelerate pillow",
+        # Additional deps for Qwen nodes
+        "pip install -U modelscope",
+        "pip install -U zhipuai",
     ])
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .env({
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "PYTHONPATH": "/root/comfy/ComfyUI"
+    })
 )
 
-# Install nodes
-image = image.run_commands([
-    # Core nodes
-    "comfy node install rgthree-comfy comfyui-impact-pack comfyui-impact-subpack",
-    "comfy node install comfyui-ipadapter-plus comfyui-inspire-pack comfyui_essentials",
-    "comfy node install wlsh_nodes ComfyUI_Comfyroll_CustomNodes",
-    "comfy node install ComfyUI-Manager ComfyUI-GGUF ComfyUI-KJNodes",
-    # YOLO & utils
-    "comfy node install ComfyUI-YOLO",
-])
+# Install nodes - dengan error handling yang lebih baik
+def install_nodes():
+    # Core nodes yang penting
+    core_nodes = [
+        "rgthree-comfy",
+        "comfyui-impact-pack",
+        "comfyui-impact-subpack",
+        "comfyui-ipadapter-plus",
+        "comfyui-inspire-pack",
+        "comfyui_essentials",
+        "wlsh_nodes",
+        "ComfyUI_Comfyroll_CustomNodes",
+        "ComfyUI-Manager",
+        "ComfyUI-GGUF",
+        "ComfyUI-KJNodes",
+        "ComfyUI-YOLO",
+    ]
+    
+    for node in core_nodes:
+        try:
+            subprocess.run(f"comfy node install {node}", shell=True, check=False)
+            print(f"✅ Installed {node}")
+        except Exception as e:
+            print(f"⚠️ Failed to install {node}: {e}")
 
-# Git nodes
+# Git nodes dengan dependencies yang jelas
 git_repos = [
-    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
+    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True, 'install_reqs': True}),
     ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
     ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
     ("receyuki/comfyui-prompt-reader-node", {'recursive': True, 'install_reqs': True}),
+    # Qwen nodes - hanya install yang stabil
+    ("QwenLM/ComfyUI_QwenVL", {'install_reqs': True}),  # Node Qwen yang lebih stabil
 ]
-
-for repo, flags in git_repos:
-    image = image.run_commands([git_clone_cmd(repo, **flags)])
 
 # Model download tasks
 model_tasks = [
@@ -198,120 +215,86 @@ def ui():
         else:
             os.makedirs(DATA_BASE, exist_ok=True)
 
-    # Update ComfyUI (FIXED: lebih robust dan simpel)
+    # Update ComfyUI
     print("🔄 Updating ComfyUI backend...")
     os.chdir(DATA_BASE)
     try:
-        # Setup git config
         subprocess.run("git config --global --add safe.directory /data/comfy/ComfyUI", shell=True, check=False)
         subprocess.run("git config pull.ff only", shell=True, check=False)
-        
-        # Reset dan pull latest
-        subprocess.run("git fetch origin", shell=True, check=True)
-        subprocess.run("git reset --hard origin/main", shell=True, check=True)
+        subprocess.run("git fetch origin", shell=True, check=False)
+        subprocess.run("git reset --hard origin/main", shell=True, check=False)
         print("✅ ComfyUI updated successfully")
     except Exception as e:
         print(f"❌ Update error: {e}")
-        print("🔄 Fallback: Reinstalling comfy-cli...")
-        subprocess.run("pip install --upgrade --force-reinstall comfy-cli", shell=True, check=True)
 
-    # Update ComfyUI-Manager
-    manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
-    if os.path.exists(manager_dir):
-        print("🔄 Updating ComfyUI-Manager...")
-        os.chdir(manager_dir)
-        subprocess.run("git pull --ff-only", shell=True, check=False)
-        os.chdir(DATA_BASE)
-    else:
-        print("📦 Installing ComfyUI-Manager...")
-        subprocess.run("comfy node install ComfyUI-Manager", shell=True, check=False)
+    # Install/Update nodes dengan error handling
+    print("📦 Installing/Updating nodes...")
+    os.chdir(DATA_BASE)
+    
+    # Install core nodes via comfy-cli
+    core_nodes = [
+        "rgthree-comfy",
+        "comfyui-impact-pack",
+        "comfyui-impact-subpack",
+        "comfyui-ipadapter-plus",
+        "comfyui-inspire-pack",
+        "comfyui_essentials",
+        "wlsh_nodes",
+        "ComfyUI_Comfyroll_CustomNodes",
+        "ComfyUI-Manager",
+        "ComfyUI-GGUF",
+        "ComfyUI-KJNodes",
+        "ComfyUI-YOLO",
+    ]
+    
+    for node in core_nodes:
+        try:
+            subprocess.run(f"comfy node install {node}", shell=True, check=False)
+            print(f"✅ Installed {node}")
+        except Exception as e:
+            print(f"⚠️ Failed to install {node}: {e}")
 
-    # Install/Update frontend (FIXED: tanpa --fast-deps)
+    # Git clone nodes
+    for repo, flags in git_repos:
+        try:
+            name = repo.split("/")[-1]
+            dest = os.path.join(CUSTOM_NODES_DIR, name)
+            if not os.path.exists(dest):
+                print(f"📥 Cloning {name}...")
+                cmd = git_clone_cmd(repo, **flags)
+                subprocess.run(cmd, shell=True, check=True)
+                
+                # Install requirements jika ada
+                if flags.get('install_reqs'):
+                    req_file = os.path.join(dest, "requirements.txt")
+                    if os.path.exists(req_file):
+                        subprocess.run(f"pip install -r {req_file}", shell=True, check=False)
+                        print(f"✅ Requirements installed for {name}")
+        except Exception as e:
+            print(f"❌ Failed to install {repo}: {e}")
+            # Hapus folder jika clone gagal
+            if os.path.exists(dest):
+                shutil.rmtree(dest, ignore_errors=True)
+
+    # Install requirements for nodes that have them
+    print("🔧 Installing node dependencies...")
+    for node_dir in os.listdir(CUSTOM_NODES_DIR):
+        req_file = os.path.join(CUSTOM_NODES_DIR, node_dir, "requirements.txt")
+        if os.path.exists(req_file):
+            try:
+                subprocess.run(f"pip install -r {req_file}", shell=True, check=False)
+                print(f"✅ Installed deps for {node_dir}")
+            except Exception as e:
+                print(f"⚠️ Failed to install deps for {node_dir}: {e}")
+
+    # Update pip & comfy-cli
+    subprocess.run("pip install --upgrade pip comfy-cli", shell=True, check=False)
+
+    # Install frontend
     print("🎨 Updating ComfyUI frontend...")
     try:
-        # Install requirements jika ada
         req_path = os.path.join(DATA_BASE, "requirements.txt")
         if os.path.exists(req_path):
             subprocess.run(f"pip install -r {req_path}", shell=True, check=False)
-        
-        # Update comfy
-        subprocess.run("pip install --upgrade comfy-cli", shell=True, check=False)
         subprocess.run("comfy update", shell=True, check=False)
-    except Exception as e:
-        print(f"⚠️ Frontend update partial: {e}")
-
-    # Configure manager
-    manager_config_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
-    os.makedirs(manager_config_dir, exist_ok=True)
-    with open(os.path.join(manager_config_dir, "config.ini"), "w") as f:
-        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
-
-    # Create dirs
-    for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
-        os.makedirs(d, exist_ok=True)
-
-    # Setup InsightFace
-    setup_insightface_persistent()
-
-    # Download models
-    print("⬇️ Checking models...")
-    for sub, fn, repo, subf in model_tasks:
-        hf_download(sub, fn, repo, subf)
-
-    # Run extra commands
-    for cmd in extra_cmds:
-        subprocess.run(cmd, shell=True, check=False)
-
-    # Verifikasi nodes dan models
-    print("🔍 Verifikasi setup...")
-    try:
-        # Cek nodes
-        nodes_count = len(os.listdir(CUSTOM_NODES_DIR)) if os.path.exists(CUSTOM_NODES_DIR) else 0
-        print(f"📂 Custom nodes: {nodes_count} nodes terinstall")
-        
-        # Cek models
-        for model_type in ["unet", "clip", "checkpoints", "loras", "vae"]:
-            path = os.path.join(MODELS_DIR, model_type)
-            if os.path.exists(path):
-                files = os.listdir(path)
-                print(f"📦 {model_type}: {len(files)} files")
-    except Exception as e:
-        print(f"⚠️ Verifikasi partial: {e}")
-
-    # Launch ComfyUI
-    print("🚀 Launching ComfyUI...")
-    launch_cmd = [
-        "comfy", "launch",
-        "--background",
-        "--",
-        "--listen", "0.0.0.0",
-        "--port", "8000",
-        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest",
-        "--gpu-only"
-    ]
-    
-    try:
-        # Cek apakah port 8000 sudah terpakai
-        result = subprocess.run(["lsof", "-i", ":8000"], capture_output=True)
-        if result.returncode == 0:
-            print("⚠️ Port 8000 terpakai, kill process lama...")
-            subprocess.run(["pkill", "-f", "comfy"], check=False)
-        
-        # Launch
-        process = subprocess.Popen(launch_cmd, cwd=DATA_BASE, env=os.environ.copy())
-        print(f"✅ ComfyUI launched with PID: {process.pid}")
-        
-        # Tunggu sebentar konfirmasi
-        import time
-        time.sleep(5)
-        
-    except Exception as e:
-        print(f"❌ Launch error: {e}")
-        # Fallback launch manual
-        print("🔄 Fallback: Launch manual...")
-        os.chdir(DATA_BASE)
-        subprocess.run([
-            "python", "main.py",
-            "--listen", "0.0.0.0",
-            "--port", "8000"
-        ], env=os.environ.copy())
+   
