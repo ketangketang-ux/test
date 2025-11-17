@@ -18,7 +18,6 @@ def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[st
     os.makedirs(target, exist_ok=True)
     final_path = os.path.join(target, filename)
     
-    # Cek file sudah lengkap (min 1MB)
     if os.path.exists(final_path) and os.path.getsize(final_path) > 1024*1024:
         print(f"✅ {filename} sudah ada, skip...")
         return
@@ -45,7 +44,6 @@ def setup_insightface_persistent():
     insightface_home = "/root/.insightface"
     insightface_home_models = os.path.join(insightface_home, "models")
     
-    # Download model jika belum ada
     if not os.path.exists(os.path.join(insightface_vol, "buffalo_l")):
         print("⬇️  Downloading InsightFace model...")
         os.makedirs(insightface_vol, exist_ok=True)
@@ -105,7 +103,7 @@ image = (
     })
 )
 
-# Install core nodes
+# Install core nodes (yang paling stabil)
 core_nodes = [
     "rgthree-comfy",
     "comfyui-impact-pack",
@@ -122,29 +120,25 @@ core_nodes = [
 ]
 
 for node in core_nodes:
-    image = image.run_commands([f"comfy node install {node} || echo 'Failed: {node}'"])
+    image = image.run_commands([f"comfy node install {node} || echo 'Skip: {node}'"])
 
-# Git repos yang stabil (FIX: install requirements secara terpisah dengan pengecekan)
+# Git repos - HANYA YANG STABIL & TERUJI (FIX: remove problematic QwenVL)
 git_repos = [
     ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
     ("welltop-cn/ComfyUI-TeaCache", {}),
     ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
     ("receyuki/comfyui-prompt-reader-node", {'recursive': True}),
-    ("QwenLM/ComfyUI_QwenVL", {}),
 ]
 
-# Clone git repos (tanpa install requirements dulu)
+# Clone git repos (FIX: tanpa install requirements di sini)
 for repo, flags in git_repos:
-    clone_cmd = f"git clone https://github.com/{repo} /root/comfy/ComfyUI/custom_nodes/{repo.split('/')[-1]}"
+    node_name = repo.split("/")[-1]
+    dest = f"/root/comfy/ComfyUI/custom_nodes/{node_name}"
+    clone_cmd = f"git clone https://github.com/{repo} {dest}"
     if flags.get('recursive'):
         clone_cmd += " --recursive"
-    image = image.run_commands([clone_cmd])
-
-# Install requirements untuk setiap node yang memilikinya (FIX)
-for repo, _ in git_repos:
-    node_name = repo.split("/")[-1]
-    req_path = f"/root/comfy/ComfyUI/custom_nodes/{node_name}/requirements.txt"
-    image = image.run_commands([f"if [ -f {req_path} ]; then pip install -r {req_path}; else echo 'No requirements for {node_name}'; fi"])
+    # FIX: lanjutkan meskipun clone gagal
+    image = image.run_commands([f"{clone_cmd} || echo 'Clone failed: {node_name}'"])
 
 # Model download tasks
 model_tasks = [
@@ -199,16 +193,20 @@ def ui():
     except Exception as e:
         print(f"❌ Update error: {e}")
 
-    # Reinstall nodes jika missing
-    print("📦 Checking nodes...")
-    for node in core_nodes:
-        node_path = os.path.join(CUSTOM_NODES_DIR, node.replace("-", "_"))
-        if not os.path.exists(node_path):
-            print(f"📥 Installing missing node: {node}")
-            subprocess.run(f"comfy node install {node}", shell=True, check=False)
-
-    # Install requirements untuk semua nodes
-    print("🔧 Installing node dependencies...")
+    # Install requirements untuk semua git nodes (FIX)
+    print("🔧 Installing requirements for git nodes...")
+    for repo, _ in git_repos:
+        node_name = repo.split("/")[-1]
+        req_file = os.path.join(CUSTOM_NODES_DIR, node_name, "requirements.txt")
+        if os.path.exists(req_file):
+            try:
+                print(f"📦 Installing deps for {node_name}...")
+                subprocess.run(f"pip install -r {req_file}", shell=True, check=False)
+            except Exception as e:
+                print(f"⚠️ Failed to install {node_name} deps: {e}")
+    
+    # Install requirements untuk semua nodes yang ada
+    print("🔧 Installing requirements for all nodes...")
     for node_dir in os.listdir(CUSTOM_NODES_DIR):
         req_file = os.path.join(CUSTOM_NODES_DIR, node_dir, "requirements.txt")
         if os.path.exists(req_file):
@@ -264,8 +262,9 @@ def ui():
     # Verifikasi
     print("🔍 Verifikasi setup...")
     try:
-        nodes = [n for n in os.listdir(CUSTOM_NODES_DIR) if not n.startswith('.')]
-        print(f"📂 Custom nodes: {len(nodes)} nodes")
+        if os.path.exists(CUSTOM_NODES_DIR):
+            nodes = [n for n in os.listdir(CUSTOM_NODES_DIR) if not n.startswith('.')]
+            print(f"📂 Custom nodes: {len(nodes)} nodes")
         
         for model_type in ["unet", "clip", "checkpoints", "loras", "vae"]:
             path = os.path.join(MODELS_DIR, model_type)
