@@ -15,7 +15,7 @@ DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
 # =============================================
-# ZIP INSTALLER (SAFE FOR MODAL)
+# ZIP INSTALLER (SAFE)
 # =============================================
 
 def install_zip(repo: str, name: str = None, branch: str = "main") -> str:
@@ -34,23 +34,7 @@ def install_zip(repo: str, name: str = None, branch: str = "main") -> str:
 
 
 # =============================================
-# HF MODEL DOWNLOAD
-# =============================================
-
-def hf_download(folder, filename, repo, subfolder=None):
-    file_path = hf_hub_download(
-        repo_id=repo,
-        filename=filename,
-        subfolder=subfolder,
-        local_dir="/tmp"
-    )
-    target = os.path.join(MODELS_DIR, folder)
-    os.makedirs(target, exist_ok=True)
-    shutil.move(file_path, os.path.join(target, filename))
-
-
-# =============================================
-# MODAL IMAGE (BASE)
+# MODAL IMAGE BASE
 # =============================================
 
 import modal
@@ -63,7 +47,7 @@ image = (
 
 
 # =============================================
-# INSTALL COMFYUI VIA ZIP ONLY
+# INSTALL COMFYUI FROM ZIP
 # =============================================
 
 image = image.run_commands([
@@ -78,30 +62,30 @@ image = image.run_commands([
 
 
 # =============================================
-# INSTALL QWEN NODES (VALID REPOS)
+# INSTALL QWEN NODES (100% VALID)
 # =============================================
 
-# 🔥 OFFICIAL IMAGE MODEL NODE
+# OFFICIAL QWEN IMAGE MODEL NODE
 image = image.run_commands([
-    install_zip("QwenLM/Qwen-Image", branch="main")     # FIXED
+    install_zip("QwenLM/Qwen-Image", branch="main")
 ])
 
-# 🔥 COMMUNITY VL NODE (WORKING)
+# COMMUNITY VL NODE
 image = image.run_commands([
-    install_zip("Fe-EAI/ComfyUI-QwenVL-Node", branch="main")
+    install_zip("1038lab/ComfyUI-QwenVL", branch="main")
 ])
 
 
 # =============================================
-# OPTIONAL ENHANCEMENT NODES
+# OPTIONAL ENHANCEMENT NODES (SAFE)
 # =============================================
 
-extra = [
+extra_nodes = [
     ("ssitu/ComfyUI_UltimateSDUpscale", "main"),
     ("ltdrdata/ComfyUI-IPAdapter-Plus", "main")
 ]
 
-for repo, branch in extra:
+for repo, branch in extra_nodes:
     image = image.run_commands([install_zip(repo, branch=branch)])
 
 
@@ -112,7 +96,7 @@ for repo, branch in extra:
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 
 app = modal.App(
-    name="comfyui-v11",
+    name="comfyui-v12",
     image=image,
 )
 
@@ -126,7 +110,7 @@ def ui():
 
     os.environ["COMFY_DIR"] = DATA_BASE
 
-    # First-time copy to volume
+    # First run: copy ComfyUI to volume
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         os.makedirs(DATA_ROOT, exist_ok=True)
         subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
