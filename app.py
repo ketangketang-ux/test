@@ -12,17 +12,6 @@ MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
-# === GITHUB CLONE HELPER ===
-def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
-    name = node_repo.split("/")[-1]
-    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
-    cmd = f"git clone https://github.com/{node_repo} {dest}"
-    if recursive:
-        cmd += " --recursive"
-    if install_reqs:
-        cmd += f" && pip install -r {dest}/requirements.txt"
-    return cmd
-
 # === HUGGINGFACE DOWNLOAD HELPER ===
 def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
     target = os.path.join(MODELS_DIR, subdir)
@@ -133,19 +122,29 @@ core_nodes = [
 ]
 
 for node in core_nodes:
-    image = image.run_commands([f"comfy node install {node} || echo 'Failed to install {node}'"])
+    image = image.run_commands([f"comfy node install {node} || echo 'Failed: {node}'"])
 
-# Git nodes yang stabil
+# Git repos yang stabil (FIX: install requirements secara terpisah dengan pengecekan)
 git_repos = [
-    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True, 'install_reqs': True}),
-    ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
+    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
+    ("welltop-cn/ComfyUI-TeaCache", {}),
     ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
-    ("receyuki/comfyui-prompt-reader-node", {'recursive': True, 'install_reqs': True}),
-    ("QwenLM/ComfyUI_QwenVL", {'install_reqs': True}),
+    ("receyuki/comfyui-prompt-reader-node", {'recursive': True}),
+    ("QwenLM/ComfyUI_QwenVL", {}),
 ]
 
+# Clone git repos (tanpa install requirements dulu)
 for repo, flags in git_repos:
-    image = image.run_commands([git_clone_cmd(repo, **flags)])
+    clone_cmd = f"git clone https://github.com/{repo} /root/comfy/ComfyUI/custom_nodes/{repo.split('/')[-1]}"
+    if flags.get('recursive'):
+        clone_cmd += " --recursive"
+    image = image.run_commands([clone_cmd])
+
+# Install requirements untuk setiap node yang memilikinya (FIX)
+for repo, _ in git_repos:
+    node_name = repo.split("/")[-1]
+    req_path = f"/root/comfy/ComfyUI/custom_nodes/{node_name}/requirements.txt"
+    image = image.run_commands([f"if [ -f {req_path} ]; then pip install -r {req_path}; else echo 'No requirements for {node_name}'; fi"])
 
 # Model download tasks
 model_tasks = [
@@ -200,7 +199,7 @@ def ui():
     except Exception as e:
         print(f"❌ Update error: {e}")
 
-    # Reinstall nodes jika ada yang missing
+    # Reinstall nodes jika missing
     print("📦 Checking nodes...")
     for node in core_nodes:
         node_path = os.path.join(CUSTOM_NODES_DIR, node.replace("-", "_"))
@@ -217,7 +216,7 @@ def ui():
                 subprocess.run(f"pip install -r {req_file}", shell=True, check=False)
                 print(f"✅ Installed deps for {node_dir}")
             except Exception:
-                pass  # Silent fail
+                pass
 
     # Update pip & comfy-cli
     subprocess.run("pip install --upgrade pip comfy-cli", shell=True, check=False)
@@ -254,7 +253,7 @@ def ui():
     for cmd in extra_cmds:
         subprocess.run(cmd, shell=True, check=False)
 
-    # Cleanup nodes yang broken (opsional)
+    # Cleanup nodes broken
     print("🧹 Cleanup broken nodes...")
     for node_dir in os.listdir(CUSTOM_NODES_DIR):
         init_file = os.path.join(CUSTOM_NODES_DIR, node_dir, "__init__.py")
