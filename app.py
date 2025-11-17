@@ -16,25 +16,29 @@ DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
 # =============================================
-# ZIP INSTALLER (NO GIT CLONE)
+# ZIP INSTALLER WITH BRANCH SUPPORT
 # =============================================
 
-def install_zip_repo(repo: str) -> str:
+def install_zip_repo(repo: str, branch: str = "main") -> str:
+    """
+    Install any GitHub repo via ZIP, choosing correct branch.
+    Fully Modal-safe (no git clone).
+    """
     name = repo.split("/")[-1]
     dest = f"{DEFAULT_COMFY_DIR}/custom_nodes/{name}"
-    zip_url = f"https://github.com/{repo}/archive/refs/heads/main.zip"
+    zip_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
 
     return (
         f"wget -q -O /tmp/{name}.zip {zip_url} && "
         f"rm -rf {dest} && "
         f"unzip -q /tmp/{name}.zip -d /tmp && "
-        f"mv /tmp/{name}-main {dest} && "
+        f"mv /tmp/{name}-{branch} {dest} && "
         f"rm /tmp/{name}.zip"
     )
 
 
 # =============================================
-# HUGGINGFACE DOWNLOAD FOR MODELS
+# HUGGINGFACE DOWNLOAD
 # =============================================
 
 def hf_download(folder, fn, repo, sub=None):
@@ -58,7 +62,7 @@ image = (
 
 
 # =============================================
-# INSTALL COMFYUI VIA ZIP (NO COMFY-CLI)
+# INSTALL COMFYUI VIA ZIP (NO comfy-cli)
 # =============================================
 
 image = image.run_commands([
@@ -66,50 +70,35 @@ image = image.run_commands([
 ])
 
 image = image.run_commands([
-    "unzip -q /tmp/comfyui.zip -d /tmp && rm -rf /root/comfy && mkdir -p /root/comfy && mv /tmp/ComfyUI-master /root/comfy/ComfyUI"
+    "unzip -q /tmp/comfyui.zip -d /tmp && "
+    "rm -rf /root/comfy && mkdir -p /root/comfy && "
+    "mv /tmp/ComfyUI-master /root/comfy/ComfyUI"
 ])
 
 
 # =============================================
-# INSTALL QWEN NODES
+# INSTALL QWEN NODES (branch FIXED)
 # =============================================
 
-QWEN_REPOS = [
-    "QwenLM/Qwen2-VL-Node",
-    "QwenLM/Qwen2-VL-ComfyUI",
-    "QwenLM/Qwen2-Image"
-]
+# 🔥 Qwen2-VL-Node uses *dev* branch (NOT main)
+image = image.run_commands([install_zip_repo("QwenLM/Qwen2-VL-Node", branch="dev")])
 
-for repo in QWEN_REPOS:
-    image = image.run_commands([install_zip_repo(repo)])
+# These use main
+image = image.run_commands([install_zip_repo("QwenLM/Qwen2-VL-ComfyUI", branch="main")])
+image = image.run_commands([install_zip_repo("QwenLM/Qwen2-Image", branch="main")])
 
 
 # =============================================
-# OPTIONAL ENHANCEMENT NODES
+# OPTIONAL ENHANCEMENT NODES (safe ZIP)
 # =============================================
 
 EXTRA = [
-    "ssitu/ComfyUI_UltimateSDUpscale",
-    "ltdrdata/ComfyUI-IPAdapter-Plus"
+    ("ssitu/ComfyUI_UltimateSDUpscale", "main"),
+    ("ltdrdata/ComfyUI-IPAdapter-Plus", "main")
 ]
 
-for repo in EXTRA:
-    image = image.run_commands([install_zip_repo(repo)])
-
-
-# =============================================
-# BASIC FLUX/QWEN MODEL SUPPORT (OPTIONAL)
-# =============================================
-
-model_tasks = [
-    ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev", None),
-]
-
-# Download models via HF if needed
-for sub, fn, repo, sf in model_tasks:
-    image = image.run_commands([
-        f"echo downloading {fn}"
-    ])
+for repo, branch in EXTRA:
+    image = image.run_commands([install_zip_repo(repo, branch=branch)])
 
 
 # =============================================
@@ -120,13 +109,15 @@ vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui", image=image)
 
 
-@app.function(
-    gpu="A100-40GB",
-    volumes={DATA_ROOT: vol},
-)
+@app.function(gpu="A100-40GB", volumes={DATA_ROOT: vol})
 @modal.web_server(8000)
 def ui():
     os.environ["COMFY_DIR"] = DATA_BASE
+
+    if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
+
     subprocess.Popen(
         ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8000"],
         cwd=DATA_BASE
