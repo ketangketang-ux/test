@@ -34,7 +34,7 @@ def install_zip(repo: str, name: str = None, branch: str = "main") -> str:
 
 
 # =============================================
-# HUGGINGFACE MODEL DOWNLOAD
+# HF MODEL DOWNLOAD
 # =============================================
 
 def hf_download(folder, filename, repo, subfolder=None):
@@ -44,15 +44,13 @@ def hf_download(folder, filename, repo, subfolder=None):
         subfolder=subfolder,
         local_dir="/tmp"
     )
-
-    target_dir = os.path.join(MODELS_DIR, folder)
-    os.makedirs(target_dir, exist_ok=True)
-
-    shutil.move(file_path, os.path.join(target_dir, filename))
+    target = os.path.join(MODELS_DIR, folder)
+    os.makedirs(target, exist_ok=True)
+    shutil.move(file_path, os.path.join(target, filename))
 
 
 # =============================================
-# MODAL IMAGE
+# MODAL IMAGE (BASE)
 # =============================================
 
 import modal
@@ -65,7 +63,7 @@ image = (
 
 
 # =============================================
-# INSTALL COMFYUI (ZIP ONLY)
+# INSTALL COMFYUI VIA ZIP ONLY
 # =============================================
 
 image = image.run_commands([
@@ -80,41 +78,41 @@ image = image.run_commands([
 
 
 # =============================================
-# INSTALL QWEN NODES
+# INSTALL QWEN NODES (VALID REPOS)
 # =============================================
 
-# Qwen2-Image (official & working)
+# 🔥 OFFICIAL IMAGE MODEL NODE
 image = image.run_commands([
-    install_zip("QwenLM/Qwen2-Image", branch="main")
+    install_zip("QwenLM/Qwen-Image", branch="main")     # FIXED
 ])
 
-# Qwen Vision-Language Node (community, stable ZIP)
+# 🔥 COMMUNITY VL NODE (WORKING)
 image = image.run_commands([
     install_zip("Fe-EAI/ComfyUI-QwenVL-Node", branch="main")
 ])
 
 
 # =============================================
-# OPTIONAL ENHANCEMENT NODES (SAFE)
+# OPTIONAL ENHANCEMENT NODES
 # =============================================
 
-extra_nodes = [
+extra = [
     ("ssitu/ComfyUI_UltimateSDUpscale", "main"),
     ("ltdrdata/ComfyUI-IPAdapter-Plus", "main")
 ]
 
-for repo, branch in extra_nodes:
+for repo, branch in extra:
     image = image.run_commands([install_zip(repo, branch=branch)])
 
 
 # =============================================
-# APP INITIALIZATION
+# APP INIT
 # =============================================
 
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 
 app = modal.App(
-    name="comfyui",
+    name="comfyui-v11",
     image=image,
 )
 
