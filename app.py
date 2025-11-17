@@ -17,14 +17,10 @@ DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
 # =============================================
-# ZIP-ONLY INSTALLER (NO GIT CLONE)
+# ZIP INSTALLER (NO GIT CLONE ANYWHERE)
 # =============================================
 
 def install_zip_repo(repo: str, install_reqs: bool = False) -> str:
-    """
-    Install repo by downloading GitHub ZIP only (NO git clone).
-    Works 100% on Modal builder.
-    """
     name = repo.split("/")[-1]
     dest = f"{DEFAULT_COMFY_DIR}/custom_nodes/{name}"
     zip_url = f"https://github.com/{repo}/archive/refs/heads/main.zip"
@@ -50,19 +46,18 @@ def install_zip_repo(repo: str, install_reqs: bool = False) -> str:
 # =============================================
 
 def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
-    out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir=TMP_DL)
-    target = os.path.join(MODELS_DIR, subdir)
-    os.makedirs(target, exist_ok=True)
-    shutil.move(out, os.path.join(target, filename))
+    out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir="/tmp")
+    target_dir = os.path.join(MODELS_DIR, subdir)
+    os.makedirs(target_dir, exist_ok=True)
+    shutil.move(out, os.path.join(target_dir, filename))
 
 
 # =============================================
-# INSIGHTFACE PERSISTENT SETUP
+# INSIGHTFACE SETUP
 # =============================================
 
 def setup_insightface_persistent():
     print("== InsightFace Setup ==")
-
     vol = os.path.join(DATA_ROOT, ".insightface", "models")
     home = "/root/.insightface"
     home_models = os.path.join(home, "models")
@@ -70,11 +65,11 @@ def setup_insightface_persistent():
     if not os.path.exists(os.path.join(vol, "buffalo_l")):
         os.makedirs(vol, exist_ok=True)
         subprocess.run(
-            "wget -q https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip -O /tmp/b.zip",
+            "wget -q https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip -O /tmp/a.zip",
             shell=True, check=True
         )
-        subprocess.run(f"unzip -q /tmp/b.zip -d {vol}", shell=True, check=True)
-        os.remove("/tmp/b.zip")
+        subprocess.run(f"unzip -q /tmp/a.zip -d {vol}", shell=True, check=True)
+        os.remove("/tmp/a.zip")
 
     os.makedirs(home, exist_ok=True)
 
@@ -85,21 +80,27 @@ def setup_insightface_persistent():
 
 
 # =============================================
-# MODAL CONFIG
+# MODAL IMAGE
 # =============================================
 
 import modal
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "unzip")
+    .apt_install("wget", "unzip", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .run_commands(["pip install --upgrade pip"])
-    .run_commands(["pip install --no-cache-dir comfy-cli uv"])
-    .run_commands(["uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1"])
-    .run_commands(["comfy --skip-prompt install --nvidia"])
-    .run_commands(["pip install insightface onnxruntime-gpu"])
+    .run_commands(["pip install huggingface_hub[hf_transfer]==0.28.1 insightface onnxruntime-gpu"])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
+
+# Install ComfyUI (ZIP ONLY, NO COMFY-CLI)
+image = image.run_commands([
+    "wget -q -O /tmp/comfy.zip https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip"
+])
+
+image = image.run_commands([
+    "unzip -q /tmp/comfy.zip -d /tmp && rm -rf /root/comfy/ComfyUI && mkdir -p /root/comfy && mv /tmp/ComfyUI-master /root/comfy/ComfyUI"
+])
 
 
 # =============================================
@@ -126,7 +127,7 @@ image = image.run_commands([
 
 
 # =============================================
-# QWEN NODES (ZIP INSTALL)
+# QWEN NODES (ZIP)
 # =============================================
 
 QWEN_REPOS = [
@@ -139,10 +140,7 @@ for repo in QWEN_REPOS:
     image = image.run_commands([install_zip_repo(repo)])
 
 
-# =============================================
-# EXTRA CUSTOM NODES
-# =============================================
-
+# EXTRA NODE PACKS
 EXTRA_REPOS = [
     ("ssitu/ComfyUI_UltimateSDUpscale", False),
     ("welltop-cn/ComfyUI-TeaCache", True),
@@ -198,20 +196,11 @@ def ui():
 
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         os.makedirs(DATA_ROOT, exist_ok=True)
-        if os.path.exists(DEFAULT_COMFY_DIR):
-            subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
+        subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
 
     os.chdir(DATA_BASE)
-    subprocess.run("git fetch --all", shell=True)
-    subprocess.run("git reset --hard origin/master || git reset --hard origin/main", shell=True)
 
-    manager_path = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
-    if os.path.exists(manager_path):
-        os.chdir(manager_path)
-        subprocess.run("git fetch --all", shell=True)
-        subprocess.run("git reset --hard origin/main || git reset --hard origin/master", shell=True)
-
-    subprocess.run("pip install --upgrade pip comfy-cli", shell=True)
+    subprocess.run("pip install --upgrade pip comfy-cli || true", shell=True)
 
     reqfile = os.path.join(DATA_BASE, "requirements.txt")
     if os.path.exists(reqfile):
@@ -233,8 +222,7 @@ def ui():
     os.environ["COMFY_DIR"] = DATA_BASE
 
     subprocess.Popen(
-        ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000",
-         "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"],
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8000"],
         cwd=DATA_BASE,
         env=os.environ.copy(),
     )
