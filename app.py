@@ -13,30 +13,26 @@ TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
-# === ZIP FALLBACK GIT CLONE (ANTI-ERROR) ===
+# === SINGLE-LINE ZIP FALLBACK GIT CLONE (FIXED FOR MODAL) ===
 def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
     """
-    Clone GitHub repo tanpa autentikasi dengan ZIP fallback (stabil di Modal).
-    Git clone dicoba dulu, kalau gagal → unduh main.zip dan extract.
+    Safe single-line clone with ZIP fallback for Modal.
     """
     name = node_repo.split("/")[-1]
     git_url = f"https://github.com/{node_repo}.git"
     zip_url = f"https://github.com/{node_repo}/archive/refs/heads/main.zip"
-
     dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
 
-    cmd = f"""
-        mkdir -p {os.path.dirname(dest)} && \
-        export GIT_TERMINAL_PROMPT=0 && \
-        (git clone --depth 1 {git_url} {dest} || (
-            echo '⚠️ git clone gagal, fallback ke ZIP...' && \
-            wget -q -O /tmp/{name}.zip {zip_url} && \
-            unzip -q /tmp/{name}.zip -d /tmp && \
-            rm -rf {dest} && \
-            mv /tmp/{name}-main {dest} && \
-            rm -f /tmp/{name}.zip
-        ))
-    """
+    rec = "--recursive" if recursive else ""
+
+    cmd = (
+        f"mkdir -p {os.path.dirname(dest)} && "
+        f"export GIT_TERMINAL_PROMPT=0 && "
+        f"git clone --depth 1 {rec} {git_url} {dest} || "
+        f"(echo clone_fail_zip && wget -q -O /tmp/{name}.zip {zip_url} && "
+        f"unzip -q /tmp/{name}.zip -d /tmp && rm -rf {dest} && "
+        f"mv /tmp/{name}-main {dest} && rm -f /tmp/{name}.zip)"
+    )
 
     if install_reqs:
         cmd += f" && if [ -f {dest}/requirements.txt ]; then pip install -r {dest}/requirements.txt || true; fi"
@@ -44,7 +40,7 @@ def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = 
     return cmd
 
 
-# === HUGGINGFACE DOWNLOAD HELPER ===
+# === HF DOWNLOAD ===
 def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
     out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir=TMP_DL)
     target = os.path.join(MODELS_DIR, subdir)
@@ -54,57 +50,39 @@ def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[st
 
 # === INSIGHTFACE SETUP ===
 def setup_insightface_persistent():
-    print("="*60)
-    print("SETUP INSIGHTFACE DIMULAI...")
-    print("="*60)
-
+    print("== InsightFace Setup ==")
     vol = os.path.join(DATA_ROOT, ".insightface", "models")
     home = "/root/.insightface"
     home_models = os.path.join(home, "models")
 
     if not os.path.exists(os.path.join(vol, "buffalo_l")):
-        print("⬇️ Downloading insightface...")
         os.makedirs(vol, exist_ok=True)
-        zip_path = os.path.join(vol, "buffalo_l.zip")
+        subprocess.run("wget -q https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip -O /tmp/b.zip", shell=True, check=True)
+        subprocess.run(f"unzip -q /tmp/b.zip -d {vol}", shell=True, check=True)
+        os.remove("/tmp/b.zip")
 
-        subprocess.run([
-            "wget", "-q",
-            "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
-            "-O", zip_path
-        ], check=True)
-
-        subprocess.run(["unzip", "-q", zip_path, "-d", vol], check=True)
-        os.remove(zip_path)
-
-    print("🔗 Creating symlink...")
     os.makedirs(home, exist_ok=True)
-
     if os.path.exists(home_models) and not os.path.islink(home_models):
-        subprocess.run(["rm", "-rf", home_models])
-
-    subprocess.run(["ln", "-sf", vol, home_models])
-
-    print("📂 Insightface OK.")
+        subprocess.run(f"rm -rf {home_models}", shell=True)
+    subprocess.run(f"ln -sf {vol} {home_models}", shell=True)
 
 
-# === MODAL SETUP ===
+# === MODAL IMAGE ===
 import modal
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
-    .run_commands([
-        "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli uv",
-        "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
-        "comfy --skip-prompt install --nvidia",
-        "pip install insightface onnxruntime-gpu"
-    ])
+    .run_commands(["pip install --upgrade pip"])
+    .run_commands(["pip install --no-cache-dir comfy-cli uv"])
+    .run_commands(["uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1"])
+    .run_commands(["comfy --skip-prompt install --nvidia"])
+    .run_commands(["pip install insightface onnxruntime-gpu"])
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 
-# === MANDATORY NODES ===
+# === MUST-HAVE NODES ===
 MANDATORY_NODES = [
     "rgthree-comfy",
     "comfyui-impact-pack",
@@ -119,12 +97,10 @@ MANDATORY_NODES = [
     "ComfyUI-Manager",
 ]
 
-image = image.run_commands([
-    " ".join(["comfy", "node", "install"] + MANDATORY_NODES)
-])
+image = image.run_commands([" ".join(["comfy", "node", "install"] + MANDATORY_NODES)])
 
 
-# === QWEN NODES (FULL PACK, PUBLIC REPOS) ===
+# === QWEN NODES (PUBLIC, NO AUTH NEEDED) ===
 QWEN_REPOS = [
     "QwenLM/Qwen2-VL-Node",
     "QwenLM/Qwen2-VL-ComfyUI",
@@ -135,7 +111,7 @@ for repo in QWEN_REPOS:
     image = image.run_commands([git_clone_cmd(repo)])
 
 
-# === EXTRA GIT NODES ===
+# === EXTRA NODES ===
 EXTRA_GIT = [
     ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
     ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
@@ -158,15 +134,13 @@ model_tasks = [
 ]
 
 extra_cmds = [
-    f"wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
+    f"wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models"
 ]
 
 
-# === UTILITY ===
 def repair_node(name):
     path = os.path.join(CUSTOM_NODES_DIR, name)
     if not os.path.exists(path):
-        print(f"⚠️ Node missing → reinstall: {name}")
         subprocess.run(f"comfy node install {name}", shell=True)
 
 
@@ -186,34 +160,28 @@ app = modal.App(name="comfyui", image=image)
 @modal.web_server(8000, startup_timeout=300)
 def ui():
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
-        print("Copying ComfyUI to volume...")
         os.makedirs(DATA_ROOT, exist_ok=True)
         if os.path.exists(DEFAULT_COMFY_DIR):
             subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
 
-    # Update ComfyUI
     os.chdir(DATA_BASE)
     subprocess.run("git fetch --all", shell=True)
     subprocess.run("git reset --hard origin/master || git reset --hard origin/main", shell=True)
 
-    # Update Manager
-    manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
-    if os.path.exists(manager_dir):
-        os.chdir(manager_dir)
+    manager = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
+    if os.path.exists(manager):
+        os.chdir(manager)
         subprocess.run("git fetch --all", shell=True)
         subprocess.run("git reset --hard origin/main || git reset --hard origin/master", shell=True)
 
     subprocess.run("pip install --upgrade pip comfy-cli", shell=True)
 
-    reqfile = os.path.join(DATA_BASE, "requirements.txt")
-    if os.path.exists(reqfile):
-        subprocess.run(f"pip install -r {reqfile}", shell=True)
-
-    os.makedirs(os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager"), exist_ok=True)
+    req = os.path.join(DATA_BASE, "requirements.txt")
+    if os.path.exists(req):
+        subprocess.run(f"pip install -r {req}", shell=True)
 
     setup_insightface_persistent()
 
-    # Model downloads
     for sub, fn, repo, subf in model_tasks:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
@@ -222,17 +190,13 @@ def ui():
     for cmd in extra_cmds:
         subprocess.run(cmd, shell=True)
 
-    # Repair nodes
     for node in MANDATORY_NODES:
         repair_node(node)
 
     os.environ["COMFY_DIR"] = DATA_BASE
 
-    cmd = [
-        "comfy", "launch", "--",
-        "--listen", "0.0.0.0",
-        "--port", "8000",
-        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest",
-    ]
-
-    subprocess.Popen(cmd, cwd=DATA_BASE, env=os.environ.copy())
+    subprocess.Popen(
+        ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"],
+        cwd=DATA_BASE,
+        env=os.environ.copy(),
+    )
