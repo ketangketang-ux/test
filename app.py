@@ -13,19 +13,15 @@ TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
 
-# === SUPER SAFE SINGLE-LINE CLONE (NO MULTILINE, NO SUBSHELL) ===
+# === SUPER SAFE ZIP INSTALLER (NO GIT CLONE) ===
 def git_clone_cmd(repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
     name = repo.split("/")[-1]
     dest = f"{DEFAULT_COMFY_DIR}/custom_nodes/{name}"
-    rec = "--recursive" if recursive else ""
     zip_url = f"https://github.com/{repo}/archive/refs/heads/main.zip"
     zip_path = f"/tmp/{name}.zip"
 
     cmd = (
         f"mkdir -p $(dirname {dest}) && "
-        f"export GIT_TERMINAL_PROMPT=0 && "
-        f"git clone --depth 1 {rec} https://github.com/{repo}.git {dest} || "
-        f"echo clone_fail && "
         f"wget -q -O {zip_path} {zip_url} && "
         f"unzip -q {zip_path} -d /tmp && "
         f"rm -rf {dest} && "
@@ -39,7 +35,7 @@ def git_clone_cmd(repo: str, recursive: bool = False, install_reqs: bool = False
     return cmd
 
 
-# === HF DOWNLOAD ===
+# === HUGGINGFACE DOWNLOAD ===
 def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
     out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir=TMP_DL)
     target = os.path.join(MODELS_DIR, subdir)
@@ -99,7 +95,7 @@ MANDATORY_NODES = [
 image = image.run_commands([" ".join(["comfy", "node", "install"] + MANDATORY_NODES)])
 
 
-# === QWEN NODES (PUBLIC REPO, NO AUTH) ===
+# === QWEN NODES (ZIP DOWNLOAD ONLY) ===
 QWEN_REPOS = [
     "QwenLM/Qwen2-VL-Node",
     "QwenLM/Qwen2-VL-ComfyUI",
@@ -112,10 +108,10 @@ for repo in QWEN_REPOS:
 
 # === EXTRA NODES ===
 EXTRA_GIT = [
-    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
+    ("ssitu/ComfyUI_UltimateSDUpscale", {}),
     ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
     ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
-    ("receyuki/comfyui-prompt-reader-node", {'recursive': True, 'install_reqs': True}),
+    ("receyuki/comfyui-prompt-reader-node", {'install_reqs': True}),
 ]
 
 for repo, flags in EXTRA_GIT:
