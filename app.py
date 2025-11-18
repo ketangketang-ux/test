@@ -1,5 +1,5 @@
 # ==========================
-# comfyui_final.py  (fixed for Colab / latest Modal)
+# comfyui_auto.py  (no prompt, no error)
 # ==========================
 import os
 import subprocess
@@ -11,9 +11,6 @@ import shutil
 # ---------- CONFIG ----------
 DATA_ROOT = "/data/comfy"
 DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
-CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
-MODELS_DIR = os.path.join(DATA_BASE, "models")
-DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 GPU_TYPE = os.environ.get("MODAL_GPU_TYPE", "A100-40GB")
 
 # ---------- IMAGE ----------
@@ -33,19 +30,24 @@ image = (
 
 # ---------- VOLUME ----------
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui-final", image=image)
+app = modal.App(name="comfyui-auto", image=image)
 
 # ---------- APP FUNCTION ----------
 @app.function(
     gpu=GPU_TYPE,
     timeout=3600,
     volumes={DATA_ROOT: vol},
-    allow_concurrent_inputs=10,        # <-- fixed (bukan 'concurrent')
+    allow_concurrent_inputs=10,
     max_containers=1,
     scaledown_window=300,
 )
 @modal.web_server(8000, startup_timeout=300)
 def ui():
+    DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
+    CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
+    MODELS_DIR = os.path.join(DATA_BASE, "models")
+    TMP_DL = "/tmp/download"
+
     # 1. First-run copy
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         shutil.copytree(DEFAULT_COMFY_DIR, DATA_BASE, dirs_exist_ok=True)
@@ -63,7 +65,7 @@ def ui():
         subprocess.run("git pull --ff-only", shell=True, check=False)
         os.chdir(DATA_BASE)
 
-    # 3. Install nodes via comfy CLI
+    # 3. Install nodes via manager
     nodes = [
         "rgthree-comfy",
         "comfyui-reactor-node",
@@ -74,7 +76,7 @@ def ui():
     for n in nodes:
         subprocess.run(["comfy", "node", "install", n], check=False)
 
-    # 4. InsightFace persistent setup
+    # 4. InsightFace persistent
     insight_vol = os.path.join(DATA_ROOT, ".insightface", "models")
     insight_home = "/root/.insightface"
     os.makedirs(insight_vol, exist_ok=True)
@@ -93,7 +95,13 @@ def ui():
         shutil.rmtree(insight_home)
     os.symlink(insight_vol, insight_home, target_is_directory=True)
 
-    # 5. Download models
+    # 5. Auto jawab tracking = false
+    manager_config = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager", "config.ini")
+    os.makedirs(os.path.dirname(manager_config), exist_ok=True)
+    with open(manager_config, "w") as f:
+        f.write("[default]\nnetwork_mode=private\nsecurity_level=weak\ntracking=false\n")
+
+    # 6. Download model
     models = [
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev", None),
         ("vae/FLUX", "ae.safetensors", "comfyanonymous/flux_vae", None),
@@ -103,10 +111,13 @@ def ui():
     for sub, fn, repo, sf in models:
         target = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(target):
-            out = hf_hub_download(repo_id=repo, filename=fn, subfolder=sf, local_dir=TMP_DL, local_dir_use_symlinks=False)
+            out = hf_hub_download(
+                repo_id=repo, filename=fn, subfolder=sf,
+                local_dir=TMP_DL, local_dir_use_symlinks=False
+            )
             shutil.move(out, target)
 
-    # 6. Launch
+    # 7. Launch
     subprocess.Popen([
         "python", "-m", "comfy", "launch", "--listen", "0.0.0.0", "--port", "8000",
         "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
