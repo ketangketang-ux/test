@@ -1,5 +1,5 @@
 # ==========================
-# comfyui_stable.py  (update otomatis + link langsung)
+# comfyui_main.py
 # ==========================
 import os
 import subprocess
@@ -13,12 +13,12 @@ GPU_TYPE = os.environ.get("MODAL_GPU_TYPE", "A100-40GB")
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "wget", "unzip", "build-essential", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
-    .pip_install("comfy-cli", "huggingface_hub[hf_transfer]", "insightface", "onnxruntime-gpu", "requests", "tqdm")
+    .pip_install("huggingface_hub[hf_transfer]", "insightface", "onnxruntime-gpu", "requests", "tqdm")
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui-stable", image=image)
+app = modal.App(name="comfyui-main", image=image)
 
 @app.function(
     gpu=GPU_TYPE,
@@ -33,12 +33,12 @@ def ui():
     CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
     MODELS_DIR = os.path.join(DATA_BASE, "models")
 
-    # 1. Copy ComfyUI ke volume (pertama kali)
+    # 1. Copy first run
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         shutil.copytree(DEFAULT_COMFY_DIR, DATA_BASE, dirs_exist_ok=True)
     os.chdir(DATA_BASE)
 
-    # 2. Selalu update ComfyUI + Manager
+    # 2. Selalu update
     subprocess.run("git pull --ff-only", shell=True, check=False)
     manager = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
     if not os.path.exists(manager):
@@ -46,15 +46,15 @@ def ui():
     else:
         os.chdir(manager); subprocess.run("git pull --ff-only", shell=True, check=False); os.chdir(DATA_BASE)
 
-    # 3. Suppress tracking prompt
+    # 3. Suppress tracking
     config = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager", "config.ini")
     os.makedirs(os.path.dirname(config), exist_ok=True)
     with open(config, "w") as f:
         f.write("[default]\nnetwork_mode=private\nsecurity_level=weak\ntracking=false\n")
 
-    # 4. Launch ComfyUI on port 8000
+    # 4. Launch pakai main.py (bukan -m comfy)
     subprocess.Popen([
-        "python", "-m", "comfy", "launch", "--listen", "0.0.0.0", "--port", "8000",
+        "python", "main.py", "--listen", "0.0.0.0", "--port", "8000",
         "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
     ], cwd=DATA_BASE)
 
