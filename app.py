@@ -32,8 +32,7 @@ image = (
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui-final-clean", image=image)
 
-# ---------- DECORATORS (URUTAN BENAR) ----------
-@modal.web_server(8000, startup_timeout=300)
+# ---------- decorator ----------
 @app.function(
     gpu=GPU_TYPE,
     timeout=3600,
@@ -42,6 +41,13 @@ app = modal.App(name="comfyui-final-clean", image=image)
     scaledown_window=300,
 )
 @modal.concurrent(max_inputs=10)
+def ui():
+    ...
+    # launch tetap pakai subprocess Popen di akhir
+    subprocess.Popen([
+        "python", "-m", "comfy", "launch", "--listen", "0.0.0.0", "--port", "8000",
+        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
+    ], cwd=DATA_BASE)@modal.concurrent(max_inputs=10)
 def ui():
     DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
     CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
