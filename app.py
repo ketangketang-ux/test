@@ -280,25 +280,44 @@ def ui():
     except Exception:
         pass
 
-    # === FIX: Launch ComfyUI dengan exec - BUKAN subprocess.Popen ===
+    # === FIX: Launch ComfyUI dengan blocking wait loop ===
     print("🚀 Starting ComfyUI server...")
+    os.chdir(DATA_BASE)
     
-    # Pastikan port 8000 kosong
+    # Kill any existing processes
     subprocess.run(["pkill", "-f", "comfy"], check=False)
     subprocess.run(["pkill", "-f", "main.py"], check=False)
     
-    # Fix: Set environment variables yang benar
+    # Launch ComfyUI in background but keep function alive
+    launch_cmd = [
+        "python", "main.py",
+        "--listen", "0.0.0.0",
+        "--port", "8000",
+        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
+    ]
+
+    # Set environment
     env = os.environ.copy()
     env.update({
         "COMFY_DIR": DATA_BASE,
         "PYTHONPATH": DATA_BASE,
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
     })
+
+    # Start ComfyUI
+    process = subprocess.Popen(launch_cmd, cwd=DATA_BASE, env=env)
+
+    print(f"✅ ComfyUI process started with PID: {process.pid}")
+    print("⏳ Waiting for server to be ready (60 seconds)...")
     
-    # FIX: Gunakan exec untuk replace process - ini yang Modal mau!
-    os.chdir(DATA_BASE)
-    os.execvpe(
-        "python",
-        ["python", "main.py", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"],
-        env
-    )
+    # Sleep lama agar Modal tau server jalan
+    import time
+    time.sleep(60)
+    
+    print("✅ Server should be ready. Keep container alive...")
+    # Loop sederhana agar fungsi tidak exit
+    try:
+        while True:
+            time.sleep(10)
+    except KeyboardInterrupt:
+        process.terminate()
