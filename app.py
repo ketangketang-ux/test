@@ -33,6 +33,7 @@ vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 app = modal.App(name="comfyui-auto", image=image)
 
 # ---------- APP FUNCTION ----------
+@modal.concurrent(max_inputs=10)
 @app.function(
     gpu=GPU_TYPE,
     timeout=3600,
