@@ -64,10 +64,12 @@ app = modal.App(name="comfyui-final", image=image)
     gpu=GPU_TYPE,
     timeout=3600,
     volumes={DATA_ROOT: vol},
-    concurrent=10,
+    allow_concurrent_inputs=10,   # <-- ganti dari 'concurrent'
     max_containers=1,
     scaledown_window=300,
-    web_server=8000,
+)
+@modal.web_server(8000, startup_timeout=300)
+def ui():
     startup_timeout=300,
 )
 def ui():
