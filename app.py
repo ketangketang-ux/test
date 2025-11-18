@@ -171,8 +171,8 @@ app = modal.App(name="comfyui", image=image)
     volumes={DATA_ROOT: vol},
 )
 @modal.concurrent(max_inputs=10)
-# FIX: Increase startup_timeout to 600 seconds
-@modal.web_server(8000, startup_timeout=600)
+# FIX: Tingkatkan startup_timeout untuk loading model besar
+@modal.web_server(8000, startup_timeout=900)  # 15 menit
 def ui():
     # Setup environment
     os.environ["COMFY_DIR"] = DATA_BASE
@@ -214,100 +214,4 @@ def ui():
     # Install requirements untuk semua nodes yang ada
     print("🔧 Installing requirements for all nodes...")
     for node_dir in os.listdir(CUSTOM_NODES_DIR):
-        req_file = os.path.join(CUSTOM_NODES_DIR, node_dir, "requirements.txt")
-        if os.path.exists(req_file):
-            try:
-                subprocess.run(f"pip install -r {req_file}", shell=True, check=False)
-                print(f"✅ Installed deps for {node_dir}")
-            except Exception:
-                pass
-
-    # Update pip & comfy-cli
-    subprocess.run("pip install --upgrade pip comfy-cli", shell=True, check=False)
-
-    # Install frontend
-    print("🎨 Updating ComfyUI frontend...")
-    try:
-        req_path = os.path.join(DATA_BASE, "requirements.txt")
-        if os.path.exists(req_path):
-            subprocess.run(f"pip install -r {req_path}", shell=True, check=False)
-        subprocess.run("comfy update", shell=True, check=False)
-    except Exception:
-        pass
-
-    # Configure manager
-    manager_config_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
-    os.makedirs(manager_config_dir, exist_ok=True)
-    with open(os.path.join(manager_config_dir, "config.ini"), "w") as f:
-        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
-
-    # Create dirs
-    for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
-        os.makedirs(d, exist_ok=True)
-
-    # Setup InsightFace
-    setup_insightface_persistent()
-
-    # Download models
-    print("⬇️ Checking models...")
-    for sub, fn, repo, subf in model_tasks:
-        hf_download(sub, fn, repo, subf)
-
-    # Run extra commands
-    for cmd in extra_cmds:
-        subprocess.run(cmd, shell=True, check=False)
-
-    # Cleanup nodes broken
-    print("🧹 Cleanup broken nodes...")
-    for node_dir in os.listdir(CUSTOM_NODES_DIR):
-        init_file = os.path.join(CUSTOM_NODES_DIR, node_dir, "__init__.py")
-        if not os.path.exists(init_file):
-            print(f"🗑️ Removing broken: {node_dir}")
-            shutil.rmtree(os.path.join(CUSTOM_NODES_DIR, node_dir), ignore_errors=True)
-
-    # Verifikasi
-    print("🔍 Verifikasi setup...")
-    try:
-        if os.path.exists(CUSTOM_NODES_DIR):
-            nodes = [n for n in os.listdir(CUSTOM_NODES_DIR) if not n.startswith('.')]
-            print(f"📂 Custom nodes: {len(nodes)} nodes")
-        
-        for model_type in ["unet", "clip", "checkpoints", "loras", "vae"]:
-            path = os.path.join(MODELS_DIR, model_type)
-            if os.path.exists(path):
-                files = os.listdir(path)
-                print(f"📦 {model_type}: {len(files)} files")
-    except Exception:
-        pass
-
-    # === FIX: Launch ComfyUI TANPA --background, TAMBAHKAN --wait ===
-    print("🚀 Launching ComfyUI...")
-    launch_cmd = [
-        "comfy", "launch",
-        # FIX: Hapus --background, tambah --wait
-        "--wait",
-        "--",
-        "--listen", "0.0.0.0",
-        "--port", "8000",
-        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest",
-        "--gpu-only"
-    ]
-    
-    try:
-        # Kill process lama jika ada
-        subprocess.run(["pkill", "-f", "comfy"], check=False)
-        
-        # FIX: Run in foreground biar Modal detect health check
-        print("⏳ Starting ComfyUI server (this may take 30-60 seconds)...")
-        subprocess.run(launch_cmd, cwd=DATA_BASE, env=os.environ.copy(), check=True)
-        
-    except Exception as e:
-        print(f"❌ Launch error: {e}")
-        # Fallback manual
-        print("🔄 Fallback: Launch manual...")
-        os.chdir(DATA_BASE)
-        subprocess.run([
-            "python", "main.py",
-            "--listen", "0.0.0.0",
-            "--port", "8000"
-        ], env=os.environ.copy())
+        req_file = os.path.join(CUSTOM_NODE
