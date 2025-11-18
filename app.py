@@ -1,5 +1,5 @@
 # ==========================
-# comfyui_auto.py  (no prompt, no error)
+# comfyui_final_clean.py
 # ==========================
 import os
 import subprocess
@@ -30,10 +30,10 @@ image = (
 
 # ---------- VOLUME ----------
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui-auto", image=image)
+app = modal.App(name="comfyui-final-clean", image=image)
 
-# ---------- APP FUNCTION ----------
-@modal.concurrent(max_inputs=10)
+# ---------- DECORATORS (URUTAN BENAR) ----------
+@modal.web_server(8000, startup_timeout=300)
 @app.function(
     gpu=GPU_TYPE,
     timeout=3600,
@@ -41,7 +41,7 @@ app = modal.App(name="comfyui-auto", image=image)
     max_containers=1,
     scaledown_window=300,
 )
-@modal.web_server(8000, startup_timeout=300)
+@modal.concurrent(max_inputs=10)
 def ui():
     DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
     CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
@@ -65,7 +65,7 @@ def ui():
         subprocess.run("git pull --ff-only", shell=True, check=False)
         os.chdir(DATA_BASE)
 
-    # 3. Install nodes via manager
+    # 3. Install nodes
     nodes = [
         "rgthree-comfy",
         "comfyui-reactor-node",
@@ -76,7 +76,7 @@ def ui():
     for n in nodes:
         subprocess.run(["comfy", "node", "install", n], check=False)
 
-    # 4. InsightFace persistent
+    # 4. InsightFace setup
     insight_vol = os.path.join(DATA_ROOT, ".insightface", "models")
     insight_home = "/root/.insightface"
     os.makedirs(insight_vol, exist_ok=True)
@@ -95,13 +95,13 @@ def ui():
         shutil.rmtree(insight_home)
     os.symlink(insight_vol, insight_home, target_is_directory=True)
 
-    # 5. Auto jawab tracking = false
+    # 5. Tracking = false (no prompt)
     manager_config = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager", "config.ini")
     os.makedirs(os.path.dirname(manager_config), exist_ok=True)
     with open(manager_config, "w") as f:
         f.write("[default]\nnetwork_mode=private\nsecurity_level=weak\ntracking=false\n")
 
-    # 6. Download model
+    # 6. Download models
     models = [
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev", None),
         ("vae/FLUX", "ae.safetensors", "comfyanonymous/flux_vae", None),
