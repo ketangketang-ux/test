@@ -37,7 +37,6 @@ app = modal.App(name="comfyui-auto", image=image)
     gpu=GPU_TYPE,
     timeout=3600,
     volumes={DATA_ROOT: vol},
-    allow_concurrent_inputs=10,
     max_containers=1,
     scaledown_window=300,
 )
