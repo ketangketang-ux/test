@@ -1,10 +1,13 @@
+# ==========================
+# comfy_final.py  (siap modal run)
+# ==========================
 import os
-import shutil
 import subprocess
+import modal
 from typing import Optional
 from huggingface_hub import hf_hub_download
 
-# === PATHS ===
+# ---------- CONFIG ----------
 DATA_ROOT = "/data/comfy"
 DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
 CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
@@ -12,149 +15,139 @@ MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
-# === HUGGINGFACE DOWNLOAD HELPER ===
-def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
-    target = os.path.join(MODELS_DIR, subdir)
-    os.makedirs(target, exist_ok=True)
-    final_path = os.path.join(target, filename)
-    
-    if os.path.exists(final_path) and os.path.getsize(final_path) > 1024*1024:
-        print(f"✅ {filename} sudah ada, skip...")
-        return
-        
-    print(f"⬇️ Downloading {filename}...")
+GPU_TYPE = os.environ.get("MODAL_GPU_TYPE", "L4")
+
+# ---------- UTILS ----------
+def git_clone(repo: str, recursive: bool = False, install_req: bool = False) -> str:
+    name = repo.split("/")[-1].replace(".git", "")
+    dest = os.path.join(CUSTOM_NODES_DIR, name)
+    cmd = f'git clone https://github.com/{repo} "{dest}"'
+    if recursive:
+        cmd += " --recursive"
+    if install_req and os.path.isfile(f"{dest}/requirements.txt"):
+        cmd += f' && python -m pip install -r "{dest}/requirements.txt"'
+    return cmd
+
+def hf_dl(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
+    target_dir = os.path.join(MODELS_DIR, subdir)
+    os.makedirs(target_dir, exist_ok=True)
     out = hf_hub_download(
-        repo_id=repo_id, 
-        filename=filename, 
-        subfolder=subfolder, 
+        repo_id=repo_id,
+        filename=filename,
+        subfolder=subfolder,
         local_dir=TMP_DL,
-        local_dir_use_symlinks=False
+        local_dir_use_symlinks=False,
     )
-    shutil.move(out, final_path)
-    print(f"✅ {filename} berhasil di-download")
+    shutil.move(out, os.path.join(target_dir, filename))
 
-# === MODAL APP SETUP ===
-import modal
-
+# ---------- IMAGE BUILD ----------
 image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "unzip")
-    .run_commands([
-        "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli uv",
-        "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
-        "comfy --skip-prompt install --nvidia",
-        "pip install insightface onnxruntime-gpu",
-        # Qwen dependencies
-        "pip install -U openai qwen-vl-utils transformers accelerate pillow",
-        "pip install -U modelscope",
-    ])
-    .env({
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        "PYTHONPATH": "/root/comfy/ComfyUI"
-    })
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "wget", "unzip", "build-essential", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
+    .pip_install(
+        "comfy-cli",
+        "huggingface_hub[hf_transfer]",
+        "insightface",
+        "onnxruntime-gpu",
+        "requests",
+        "tqdm",
+    )
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Install nodes yang DIBUTUHKAN SAJA
-# ComfyUI-GGUF = UNETLoader untuk Flux GGUF
-# ComfyUI-Manager = Manager dasar
-required_nodes = [
-    "ComfyUI-GGUF",
-    "comfyui-essentials",
-    "ComfyUI-Manager",
-]
-
-for node in required_nodes:
-    image = image.run_commands([f"comfy node install {node} || echo 'Skip: {node}'"])
-
-# Install Qwen node (repo yang stabil)
-image = image.run_commands([
-    "git clone https://github.com/QwenLM/ComfyUI-Qwen-VL-API /root/comfy/ComfyUI/custom_nodes/ComfyUI-Qwen-VL-API || echo 'Qwen clone failed'",
-    "pip install -r /root/comfy/ComfyUI/custom_nodes/ComfyUI-Qwen-VL-API/requirements.txt || echo 'No Qwen requirements'"
-])
-
-# Model download tasks
-model_tasks = [
-    ("unet/flux", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
-    ("clip/t5", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
-    ("clip/clip_l", "clip_l.safetensors", "comfyanonymous/flux_text_encoders", None),
-    ("checkpoints", "flux1-dev-fp8-all-in-one.safetensors", "camenduru/FLUX.1-dev", None),
-    ("loras", "mjV6.safetensors", "strangerzonehf/Flux-Midjourney-Mix2-LoRA", None),
-    ("vae/flux", "ae.safetensors", "ffxvs/vae-flux", None),
-]
-
-extra_cmds = [
-    f"wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
-]
-
-# Create volume
+# ---------- VOLUME ----------
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui", image=image)
+app = modal.App(name="comfyui-final", image=image)
 
+# ---------- APP FUNCTION ----------
 @app.function(
+    gpu=GPU_TYPE,
+    timeout=3600,
+    volumes={DATA_ROOT: vol},
+    concurrent=10,
     max_containers=1,
     scaledown_window=300,
-    timeout=1800,
-    gpu=os.environ.get('MODAL_GPU_TYPE', 'A100-40GB'),
-    volumes={DATA_ROOT: vol},
+    web_server=8000,
+    startup_timeout=300,
 )
-@modal.concurrent(max_inputs=10)
-# FIX: Tingkatkan timeout biar model besar sempat load
-@modal.web_server(8000, startup_timeout=600)
 def ui():
-    # Setup environment
-    os.environ["COMFY_DIR"] = DATA_BASE
-    os.environ["PYTHONPATH"] = f"{DATA_BASE}:{os.environ.get('PYTHONPATH', '')}"
-    
-    # First run setup
+    import shutil
+
+    # 1. First-run copy ComfyUI ke volume
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
-        print("🔥 First run: Copying ComfyUI to volume...")
-        os.makedirs(DATA_ROOT, exist_ok=True)
-        if os.path.exists(DEFAULT_COMFY_DIR):
-            subprocess.run(f"cp -r {DEFAULT_COMFY_DIR}/* {DATA_BASE}/", shell=True, check=True)
-        else:
-            os.makedirs(DATA_BASE, exist_ok=True)
+        print("First run – copy ComfyUI to volume ...")
+        shutil.copytree(DEFAULT_COMFY_DIR, DATA_BASE, dirs_exist_ok=True)
 
-    # Update ComfyUI
-    print("🔄 Updating ComfyUI backend...")
     os.chdir(DATA_BASE)
-    try:
-        subprocess.run("git config --global --add safe.directory /data/comfy/ComfyUI", shell=True, check=False)
-        subprocess.run("git config pull.ff only", shell=True, check=False)
-        subprocess.run("git fetch origin", shell=True, check=False)
-        subprocess.run("git reset --hard origin/main", shell=True, check=False)
-        print("✅ ComfyUI updated successfully")
-    except Exception as e:
-        print(f"❌ Update error: {e}")
 
-    # Install requirements untuk Qwen node
-    qwen_req = "/root/comfy/ComfyUI/custom_nodes/ComfyUI-Qwen-VL-API/requirements.txt"
-    if os.path.exists(qwen_req):
-        print("📦 Installing Qwen dependencies...")
-        subprocess.run(f"pip install -r {qwen_req}", shell=True, check=False)
+    # 2. Update core & Manager
+    subprocess.run("git config pull.ff only", shell=True, check=False)
+    subprocess.run("git pull --ff-only", shell=True, check=False)
 
-    # Update pip & comfy-cli
-    subprocess.run("pip install --upgrade pip comfy-cli", shell=True, check=False)
+    manager = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
+    if not os.path.exists(manager):
+        subprocess.run("git clone https://github.com/ltdrdata/ComfyUI-Manager.git", shell=True, check=True)
+    else:
+        os.chdir(manager)
+        subprocess.run("git pull --ff-only", shell=True, check=False)
+        os.chdir(DATA_BASE)
 
-    # Configure manager
-    manager_config_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
-    os.makedirs(manager_config_dir, exist_ok=True)
-    with open(os.path.join(manager_config_dir, "config.ini"), "w") as f:
-        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
+    # 3. Install nodes via manager CLI (tambah / kurangi di list)
+    nodes = [
+        "rgthree-comfy",
+        "comfyui-impact-pack",
+        "comfyui-reactor-node",
+        "ComfyUI-SUPIR",
+        "ComfyUI-InsightFace",
+        "ComfyUI_essentials",
+        "ComfyUI-YOLO",
+        "comfyui-ipadapter-plus",
+    ]
+    for n in nodes:
+        subprocess.run(["comfy", "node", "install", n], check=False)
 
-    # Download models
-    print("⬇️ Checking models...")
-    for sub, fn, repo, subf in model_tasks:
-        hf_download(sub, fn, repo, subf)
+    # 4. InsightFace setup (persistent di volume)
+    insight_vol = os.path.join(DATA_ROOT, ".insightface", "models")
+    insight_home = "/root/.insightface"
+    os.makedirs(insight_vol, exist_ok=True)
 
-    # Run extra commands
-    for cmd in extra_cmds:
-        subprocess.run(cmd, shell=True, check=False)
+    if not os.path.exists(os.path.join(insight_vol, "buffalo_l")):
+        print("⬇️  Download InsightFace model ...")
+        zip_path = os.path.join(insight_vol, "buffalo_l.zip")
+        subprocess.run([
+            "wget", "-q", "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+            "-O", zip_path
+        ], check=True)
+        subprocess.run(["unzip", "-q", zip_path, "-d", insight_vol], check=True)
+        os.remove(zip_path)
 
-    # === FIX: Launch ComfyUI seperti script lama - Popen & exit ===
-    print("🚀 Launching ComfyUI...")
-    os.environ["COMFY_DIR"] = DATA_BASE
-    launch_cmd = ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000", "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"]
-    subprocess.Popen(launch_cmd, cwd=DATA_BASE, env=os.environ.copy())
-    
-    print("✅ ComfyUI launched. Container will stay alive because Modal detects port 8000 open.")
+    # symlink agar ReActor & InsightFace temukan model
+    os.makedirs(os.path.dirname(insight_home), exist_ok=True)
+    if os.path.exists(insight_home) and not os.path.islink(insight_home):
+        shutil.rmtree(insight_home)
+    os.symlink(insight_vol, insight_home, target_is_directory=True)
+
+    # 5. Download model (tambah / kurangi di list)
+    models = [
+        ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev", None),
+        ("vae/FLUX", "ae.safetensors", "comfyanonymous/flux_vae", None),
+        ("clip/FLUX", "t5xxl_fp8_e4m3fn.safetensors", "comfyanonymous/flux_text_encoders", None),
+        ("clip/FLUX", "clip_l.safetensors", "comfyanonymous/flux_text_encoders", None),
+        ("upscale_models", "4x_NMKD-Superscale-SP_178000_G.pth", "nmkd/superscale-model", None),
+    ]
+    for sub, fn, repo, sf in models:
+        target = os.path.join(MODELS_DIR, sub, fn)
+        if not os.path.exists(target):
+            print(f"⬇️  {fn}")
+            hf_dl(sub, fn, repo, sf)
+
+    # 6. Launch
+    subprocess.Popen([
+        "python", "-m", "comfy", "launch", "--listen", "0.0.0.0", "--port", "8000",
+        "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
+    ], cwd=DATA_BASE)
+
+
+@app.local_entrypoint()
+def main():
+    ui.remote()
