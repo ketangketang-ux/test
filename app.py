@@ -122,7 +122,7 @@ core_nodes = [
 for node in core_nodes:
     image = image.run_commands([f"comfy node install {node} || echo 'Skip: {node}'"])
 
-# Git repos - HANYA YANG STABIL & TERUJI (FIX: remove problematic QwenVL)
+# Git repos yang stabil (FIX: remove problematic QwenVL)
 git_repos = [
     ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
     ("welltop-cn/ComfyUI-TeaCache", {}),
@@ -130,15 +130,20 @@ git_repos = [
     ("receyuki/comfyui-prompt-reader-node", {'recursive': True}),
 ]
 
-# Clone git repos (FIX: tanpa install requirements di sini)
+# Clone git repos (FIX: lanjutkan meskipun clone gagal)
 for repo, flags in git_repos:
     node_name = repo.split("/")[-1]
     dest = f"/root/comfy/ComfyUI/custom_nodes/{node_name}"
     clone_cmd = f"git clone https://github.com/{repo} {dest}"
     if flags.get('recursive'):
         clone_cmd += " --recursive"
-    # FIX: lanjutkan meskipun clone gagal
     image = image.run_commands([f"{clone_cmd} || echo 'Clone failed: {node_name}'"])
+
+# Install requirements untuk setiap node yang memilikinya (FIX)
+for repo, _ in git_repos:
+    node_name = repo.split("/")[-1]
+    req_path = f"/root/comfy/ComfyUI/custom_nodes/{node_name}/requirements.txt"
+    image = image.run_commands([f"if [ -f {req_path} ]; then pip install -r {req_path}; else echo 'No requirements for {node_name}'; fi"])
 
 # Model download tasks
 model_tasks = [
@@ -166,7 +171,8 @@ app = modal.App(name="comfyui", image=image)
     volumes={DATA_ROOT: vol},
 )
 @modal.concurrent(max_inputs=10)
-@modal.web_server(8000, startup_timeout=300)
+# FIX: Increase startup_timeout to 600 seconds
+@modal.web_server(8000, startup_timeout=600)
 def ui():
     # Setup environment
     os.environ["COMFY_DIR"] = DATA_BASE
@@ -193,7 +199,7 @@ def ui():
     except Exception as e:
         print(f"❌ Update error: {e}")
 
-    # Install requirements untuk semua git nodes (FIX)
+    # Install requirements untuk semua git nodes
     print("🔧 Installing requirements for git nodes...")
     for repo, _ in git_repos:
         node_name = repo.split("/")[-1]
@@ -274,11 +280,12 @@ def ui():
     except Exception:
         pass
 
-    # Launch ComfyUI
+    # === FIX: Launch ComfyUI TANPA --background, TAMBAHKAN --wait ===
     print("🚀 Launching ComfyUI...")
     launch_cmd = [
         "comfy", "launch",
-        "--background",
+        # FIX: Hapus --background, tambah --wait
+        "--wait",
         "--",
         "--listen", "0.0.0.0",
         "--port", "8000",
@@ -287,16 +294,17 @@ def ui():
     ]
     
     try:
+        # Kill process lama jika ada
         subprocess.run(["pkill", "-f", "comfy"], check=False)
-        process = subprocess.Popen(launch_cmd, cwd=DATA_BASE, env=os.environ.copy())
-        print(f"✅ Launched with PID: {process.pid}")
         
-        import time
-        time.sleep(5)
+        # FIX: Run in foreground biar Modal detect health check
+        print("⏳ Starting ComfyUI server (this may take 30-60 seconds)...")
+        subprocess.run(launch_cmd, cwd=DATA_BASE, env=os.environ.copy(), check=True)
         
     except Exception as e:
         print(f"❌ Launch error: {e}")
-        # Fallback
+        # Fallback manual
+        print("🔄 Fallback: Launch manual...")
         os.chdir(DATA_BASE)
         subprocess.run([
             "python", "main.py",
